@@ -244,6 +244,31 @@ const COLS = {
     from: (r) => ({ id: r.id, patientId: r.patient_id, encounterId: es(r.encounter_id), documentType: r.document_type, title: r.title, storagePath: es(r.storage_path), notes: es(r.notes) }),
     to: (o) => ({ id: o.id, clinic_id: CID, patient_id: o.patientId, encounter_id: nn(o.encounterId), document_type: o.documentType || "other", title: o.title, storage_path: o.storagePath || null, notes: o.notes || "" }),
   },
+  medOrderCatalog: {
+    table: "medical_order_catalog",
+    from: (r) => ({ id: r.id, specialtyId: es(r.specialty_id), category: r.category, name: r.name_ar, defaultDose: es(r.default_dose_text), active: r.active !== false, sortOrder: r.sort_order || 0 }),
+    to: (o) => ({ id: o.id, clinic_id: CID, specialty_id: nn(o.specialtyId), category: o.category, name_ar: o.name, default_dose_text: o.defaultDose || null, active: o.active !== false, sort_order: o.sortOrder || 0 }),
+  },
+  serviceDefaultOrders: {
+    table: "service_default_orders",
+    from: (r) => ({ id: r.id, serviceId: r.service_id, catalogId: r.catalog_id }),
+    to: (o) => ({ id: o.id, clinic_id: CID, service_id: o.serviceId, catalog_id: o.catalogId }),
+  },
+  prescriptions: {
+    table: "prescriptions",
+    from: (r) => ({ id: r.id, patientId: r.patient_id, doctorId: es(r.doctor_id), encounterId: es(r.encounter_id), date: (r.prescribed_at || "").slice(0, 10), notes: es(r.notes), status: r.status || "active" }),
+    to: (o) => ({ id: o.id, clinic_id: CID, patient_id: o.patientId, doctor_id: nn(o.doctorId), encounter_id: nn(o.encounterId), prescribed_at: o.date || todayStr(), notes: o.notes || "", status: o.status || "active" }),
+  },
+  prescriptionItems: {
+    table: "prescription_items",
+    from: (r) => ({ id: r.id, rxId: r.prescription_id, name: r.medication_name, strength: es(r.strength), form: es(r.dosage_form), dose: es(r.dose), route: es(r.route), frequency: es(r.frequency), duration: es(r.duration), instructions: es(r.instructions) }),
+    to: (o) => ({ id: o.id, prescription_id: o.rxId, medication_name: o.name, strength: o.strength || null, dosage_form: o.form || null, dose: o.dose || null, route: o.route || null, frequency: o.frequency || null, duration: o.duration || null, instructions: o.instructions || null }),
+  },
+  encounterInstructions: {
+    table: "encounter_instructions",
+    from: (r) => ({ id: r.id, encounterId: r.encounter_id, patientId: r.patient_id, doctorId: es(r.doctor_id), type: r.instruction_type, title: es(r.title), body: r.body, printable: r.printable !== false, shareable: r.shareable !== false }),
+    to: (o) => ({ id: o.id, clinic_id: CID, encounter_id: o.encounterId, patient_id: o.patientId, doctor_id: nn(o.doctorId), instruction_type: o.type || "general", title: o.title || null, body: o.body, visibility: "patient", priority: "normal", printable: o.printable !== false, shareable: o.shareable !== false }),
+  },
 };
 
 /* ربط الصلاحيات البسيطة اللي بيستخدمها التطبيق بأكواد كتالوج الصلاحيات الرسمي */
@@ -261,7 +286,7 @@ const defaultPermsForJobTitle = (jobTitlePerms, jobTitleId) => {
 /* تحميل كل البيانات المسموح بها لهذا المستخدم (الحماية من قاعدة البيانات نفسها) */
 async function loadAll(member) {
   CID = member.clinic_id;
-  const tables = ["members", "contracts", "patients", "appointments", "treatment_plans", "medical_records", "payments", "expenses", "inventory_items", "lab_cases", "attendance", "payroll_tx", "audit_logs", "clinics", "specialties", "job_titles", "job_title_permissions", "clinic_branches", "member_branch_assignments", "clinic_services", "service_consumable_recipe", "suppliers", "overhead_categories", "clinic_overhead_costs", "overhead_allocation_settings", "purchase_invoices", "supplier_payments", "encounters", "encounter_field_values", "encounter_diagnoses", "encounter_procedures", "clinical_documents", "specialty_form_templates", "specialty_form_fields"];
+  const tables = ["members", "contracts", "patients", "appointments", "treatment_plans", "medical_records", "payments", "expenses", "inventory_items", "lab_cases", "attendance", "payroll_tx", "audit_logs", "clinics", "specialties", "job_titles", "job_title_permissions", "clinic_branches", "member_branch_assignments", "clinic_services", "service_consumable_recipe", "suppliers", "overhead_categories", "clinic_overhead_costs", "overhead_allocation_settings", "purchase_invoices", "supplier_payments", "encounters", "encounter_field_values", "encounter_diagnoses", "encounter_procedures", "clinical_documents", "specialty_form_templates", "specialty_form_fields", "medical_order_catalog", "service_default_orders", "prescriptions", "prescription_items", "encounter_instructions"];
   const res = {};
   for (const t of tables) {
     const q = sb.from(t).select("*").limit(5000);
@@ -307,6 +332,11 @@ async function loadAll(member) {
     encounterDiagnoses: res.encounter_diagnoses.map(COLS.encounterDiagnoses.from),
     encounterProcedures: res.encounter_procedures.map(COLS.encounterProcedures.from),
     clinicalDocuments: res.clinical_documents.map(COLS.clinicalDocuments.from),
+    medOrderCatalog: res.medical_order_catalog.map(COLS.medOrderCatalog.from),
+    serviceDefaultOrders: res.service_default_orders.map(COLS.serviceDefaultOrders.from),
+    prescriptions: res.prescriptions.map(COLS.prescriptions.from),
+    prescriptionItems: res.prescription_items.map(COLS.prescriptionItems.from),
+    encounterInstructions: res.encounter_instructions.map(COLS.encounterInstructions.from),
     specialtyFormTemplates: res.specialty_form_templates.map((r) => ({ id: r.id, specialtyId: r.specialty_id, name: r.name, active: r.active !== false })),
     specialtyFormFields: res.specialty_form_fields.map((r) => ({ id: r.id, templateId: r.template_id, key: r.field_key, label: r.label_ar, type: r.field_type, section: r.section_key, sectionLabel: r.section_label_ar, required: !!r.required, options: r.options, unit: es(r.unit), sortOrder: r.sort_order || 0, active: r.active !== false })),
     overheadCategories: res.overhead_categories.map(COLS.overheadCategories.from),
@@ -2029,15 +2059,17 @@ function Settings({ db, update, setModal }) {
                 <p className="font-semibold truncate">{s.name} {!s.active && <span className="text-[10px] bg-slate-100 text-slate-400 rounded-full px-2 py-0.5">معطّلة</span>} {s.autoPricing && <span className="text-[10px] bg-violet-50 text-violet-700 rounded-full px-2 py-0.5">💡 تسعير تلقائي</span>}
                   {s.specialtyId ? <span className="text-[10px] bg-teal-50 text-teal-700 rounded-full px-2 py-0.5">{specName(s.specialtyId) || "—"}</span>
                     : <span className="text-[10px] bg-slate-100 text-slate-500 rounded-full px-2 py-0.5">عام</span>}</p>
-                <p className="text-xs text-slate-500">{fmt(s.price)} · {s.duration} دقيقة · {db.serviceRecipe.filter((r) => r.serviceId === s.id).length} مستهلك مرتبط</p>
+                <p className="text-xs text-slate-500">{fmt(s.price)} · {s.duration} دقيقة · {db.serviceRecipe.filter((r) => r.serviceId === s.id).length} مستهلك مرتبط · {db.serviceDefaultOrders.filter((r) => r.serviceId === s.id).length} دواء/تعليمة افتراضية</p>
               </div>
               <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "serviceRecipe", data: s })}>🧪 المستهلكات</Btn>
+              <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "serviceOrders", data: s })}>💊 روشتة افتراضية</Btn>
               <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "service", data: { edit: s } })}>تعديل</Btn>
               <Btn size="sm" tone="rose" onClick={() => {
                 if (!window.confirm(`حذف خدمة "${s.name}"؟`)) return;
                 update((d) => {
                   d.services = d.services.filter((x) => x.id !== s.id);
                   d.serviceRecipe = d.serviceRecipe.filter((x) => x.serviceId !== s.id);
+                  d.serviceDefaultOrders = d.serviceDefaultOrders.filter((x) => x.serviceId !== s.id);
                   return d;
                 }, "حذف خدمة: " + s.name);
               }}>حذف</Btn>
@@ -2045,6 +2077,39 @@ function Settings({ db, update, setModal }) {
           ));
         })()}
       </div>
+
+      {["medication", "instruction"].map((cat) => {
+        const label = cat === "medication" ? "الأدوية" : "التعليمات";
+        const list = db.medOrderCatalog.filter((c) => c.category === cat);
+        return (
+          <React.Fragment key={cat}>
+            <div className="flex justify-between items-center">
+              <h2 className="font-bold text-teal-900">{cat === "medication" ? "💊" : "📝"} {label} (للروشتة)</h2>
+              <Btn size="sm" onClick={() => setModal({ type: "medOrder", data: { category: cat } })}>+ {cat === "medication" ? "دواء" : "تعليمة"}</Btn>
+            </div>
+            <Card className="p-3">
+              {list.length === 0 ? <Empty text={`لا توجد ${label} مسجلة بعد — أضفها هنا عشان الدكتور يختارها بسرعة في الروشتة`} /> : (
+                <div className="flex flex-wrap gap-2">
+                  {list.map((c) => (
+                    <span key={c.id} className={`flex items-center gap-1.5 text-xs rounded-full px-3 py-1.5 border ${c.active ? "bg-sky-50 border-sky-200 text-sky-800" : "bg-slate-50 border-slate-200 text-slate-400"}`}>
+                      {c.name} {c.specialtyId && <span className="text-[10px] opacity-70">({specName(c.specialtyId)})</span>}
+                      <button onClick={() => setModal({ type: "medOrder", data: { category: cat, edit: c } })} className="hover:opacity-70">✏️</button>
+                      <button onClick={() => {
+                        if (!window.confirm(`حذف "${c.name}"؟`)) return;
+                        update((d) => {
+                          d.medOrderCatalog = d.medOrderCatalog.filter((x) => x.id !== c.id);
+                          d.serviceDefaultOrders = d.serviceDefaultOrders.filter((x) => x.catalogId !== c.id);
+                          return d;
+                        }, `حذف من قائمة ${label}: ${c.name}`);
+                      }} className="hover:text-rose-600">✕</button>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </Card>
+          </React.Fragment>
+        );
+      })}
 
       <div className="flex justify-between items-center">
         <h2 className="font-bold text-teal-900">الموردين</h2>
@@ -2528,6 +2593,8 @@ function EncounterModal({ modal, setModal, db, update, h }) {
   });
   const [diagInput, setDiagInput] = useState("");
   const [procInput, setProcInput] = useState("");
+  const [medInput, setMedInput] = useState("");
+  const [insInput, setInsInput] = useState("");
   const [docType, setDocType] = useState("تحليل");
   const [uploading, setUploading] = useState(false);
   const [err, setErr] = useState("");
@@ -2543,6 +2610,15 @@ function EncounterModal({ modal, setModal, db, update, h }) {
   const procedures = edit ? db.encounterProcedures.filter((x) => x.encounterId === edit.id) : [];
   const documents = edit ? db.clinicalDocuments.filter((x) => x.encounterId === edit.id) : [];
   const specServices = db.services.filter((s) => s.active && s.specialtyId === specialtyId);
+
+  const rx = edit ? db.prescriptions.find((r) => r.encounterId === edit.id) : null;
+  const rxItems = rx ? db.prescriptionItems.filter((i) => i.rxId === rx.id) : [];
+  const instructions = edit ? db.encounterInstructions.filter((x) => x.encounterId === edit.id) : [];
+  const medCatalog = db.medOrderCatalog.filter((c) => c.category === "medication" && c.active && (!c.specialtyId || c.specialtyId === specialtyId));
+  const insCatalog = db.medOrderCatalog.filter((c) => c.category === "instruction" && c.active && (!c.specialtyId || c.specialtyId === specialtyId));
+  const linkedAppt = edit?.apptId ? db.appointments.find((a) => a.id === edit.apptId) : null;
+  const linkedService = linkedAppt ? db.services.find((s) => s.name === linkedAppt.service) : null;
+  const serviceDefaults = linkedService ? db.serviceDefaultOrders.filter((x) => x.serviceId === linkedService.id).map((x) => db.medOrderCatalog.find((c) => c.id === x.catalogId)).filter(Boolean) : [];
 
   const saveEncounter = () => {
     if (!doctorId) { setErr("اختر الطبيب"); return; }
@@ -2587,6 +2663,77 @@ function EncounterModal({ modal, setModal, db, update, h }) {
     setProcInput("");
   };
   const removeProcedure = (x) => update((d) => { d.encounterProcedures = d.encounterProcedures.filter((y) => y.id !== x.id); return d; }, `حذف إجراء: ${x.name}`);
+
+  const ensureRx = (d) => {
+    let r = d.prescriptions.find((x) => x.encounterId === edit.id);
+    if (!r) { r = { id: uid(), patientId, doctorId, encounterId: edit.id, date: edit.date || todayStr(), notes: "", status: "active" }; d.prescriptions.push(r); }
+    return r;
+  };
+  const addMed = (name, defaultDose) => {
+    const n = (name || medInput).trim();
+    if (!n || !edit) return;
+    update((d) => {
+      const r = ensureRx(d);
+      d.prescriptionItems.push({ id: uid(), rxId: r.id, name: n, strength: "", form: "", dose: defaultDose || "", route: "", frequency: "", duration: "", instructions: "" });
+      return d;
+    }, `دواء في روشتة ${patient.name}: ${n}`);
+    setMedInput("");
+  };
+  const removeMed = (item) => update((d) => { d.prescriptionItems = d.prescriptionItems.filter((y) => y.id !== item.id); return d; }, `حذف دواء من روشتة ${patient.name}: ${item.name}`);
+  const updateMedField = (item, key, value) => update((d) => {
+    const x = d.prescriptionItems.find((y) => y.id === item.id);
+    if (x) x[key] = value;
+    return d;
+  });
+
+  const addInstruction = (body) => {
+    const n = (body || insInput).trim();
+    if (!n || !edit) return;
+    update((d) => {
+      d.encounterInstructions.push({ id: uid(), encounterId: edit.id, patientId, doctorId, type: "general", title: "", body: n, printable: true, shareable: true });
+      return d;
+    }, `تعليمة لـ${patient.name}: ${n}`);
+    setInsInput("");
+  };
+  const removeInstruction = (x) => update((d) => { d.encounterInstructions = d.encounterInstructions.filter((y) => y.id !== x.id); return d; }, `حذف تعليمة: ${x.body}`);
+
+  const loadServiceDefaults = () => {
+    if (!edit || serviceDefaults.length === 0) return;
+    update((d) => {
+      const r = ensureRx(d);
+      serviceDefaults.forEach((c) => {
+        if (c.category === "medication") d.prescriptionItems.push({ id: uid(), rxId: r.id, name: c.name, strength: "", form: "", dose: c.defaultDose || "", route: "", frequency: "", duration: "", instructions: "" });
+        else d.encounterInstructions.push({ id: uid(), encounterId: edit.id, patientId, doctorId, type: "general", title: "", body: c.name, printable: true, shareable: true });
+      });
+      return d;
+    }, `تحميل روشتة افتراضية لخدمة ${linkedService?.name} — ${patient.name}`);
+  };
+
+  const escHtml = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const rxSummaryText = () => {
+    const medsText = rxItems.map((i) => `• ${i.name}${i.dose ? " — " + i.dose : ""}${i.frequency ? " (" + i.frequency + ")" : ""}${i.duration ? " لمدة " + i.duration : ""}`).join("\n");
+    const insText = instructions.map((i) => `• ${i.body}`).join("\n");
+    return `روشتة ${patient.name} — ${edit.date}\n${db.clinicName}\n\n${rxItems.length ? "الأدوية:\n" + medsText + "\n\n" : ""}${instructions.length ? "التعليمات:\n" + insText : ""}`;
+  };
+  const printRx = () => {
+    const w = window.open("", "_blank", "noopener");
+    if (!w) return;
+    const rows = rxItems.map((i) => `<tr><td>${escHtml(i.name)}</td><td>${escHtml(i.dose)}</td><td>${escHtml(i.frequency)}</td><td>${escHtml(i.duration)}</td></tr>`).join("");
+    const insLis = instructions.map((i) => `<li>${escHtml(i.body)}</li>`).join("");
+    w.document.write(`<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>روشتة ${escHtml(patient.name)}</title>
+      <style>body{font-family:Tahoma,Arial,sans-serif;padding:24px;color:#0f172a} h1{color:#115e59;margin-bottom:0} table{width:100%;border-collapse:collapse;margin-top:10px} td,th{border:1px solid #cbd5e1;padding:6px 8px;text-align:right;font-size:14px} li{margin-bottom:4px}</style>
+      </head><body>
+      <h1>${escHtml(db.clinicName)}</h1>
+      <p>المريض: <b>${escHtml(patient.name)}</b> &nbsp; التاريخ: ${escHtml(edit.date)}</p>
+      <p>الطبيب: ${escHtml(h.dName(doctorId))}</p>
+      ${rxItems.length ? `<h3>الأدوية</h3><table><tr><th>الدواء</th><th>الجرعة</th><th>التكرار</th><th>المدة</th></tr>${rows}</table>` : ""}
+      ${instructions.length ? `<h3>التعليمات</h3><ul>${insLis}</ul>` : ""}
+      </body></html>`);
+    w.document.close();
+    w.focus();
+    w.print();
+  };
+  const shareRx = () => window.open(waLink(patient.phone, rxSummaryText()), "_blank");
 
   const handleFiles = async (fileList) => {
     if (!fileList || !fileList.length || !edit) return;
@@ -2746,6 +2893,76 @@ function EncounterModal({ modal, setModal, db, update, h }) {
               </div>
               {uploading && <p className="text-[11px] text-slate-400 mt-1">جارِ الرفع…</p>}
               <p className="text-[10px] text-slate-400 mt-1">تقدر تصوّر مباشرة بالكاميرا أو ترفع ملف/صورة جاهزة.</p>
+            </div>
+
+            {(h.isOwner || h.myDocId) && (
+            <div className="border-t border-slate-100 pt-3">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs font-bold text-teal-700">💊 الروشتة — الأدوية</p>
+                {serviceDefaults.length > 0 && <Btn size="sm" tone="ghost" onClick={loadServiceDefaults}>⬇️ تحميل روشتة {linkedService.name} الافتراضية</Btn>}
+              </div>
+              {medCatalog.length > 0 && (
+                <div className="flex gap-1.5 overflow-x-auto pb-1 mb-2">
+                  {medCatalog.map((c) => (
+                    <button key={c.id} type="button" onClick={() => addMed(c.name, c.defaultDose)}
+                      className="px-2.5 py-1 rounded-full text-[11px] font-semibold whitespace-nowrap bg-sky-50 text-sky-700 border border-sky-200">+ {c.name}</button>
+                  ))}
+                </div>
+              )}
+              {rxItems.length > 0 && (
+                <div className="space-y-1.5 mb-2">
+                  {rxItems.map((it) => (
+                    <div key={it.id} className="bg-slate-50 rounded-lg p-2">
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs font-semibold">{it.name}</p>
+                        <button onClick={() => removeMed(it)} className="text-rose-400 hover:text-rose-600 text-xs">✕ حذف</button>
+                      </div>
+                      <div className="grid grid-cols-3 gap-1.5 mt-1.5">
+                        <input className="border border-slate-200 rounded-lg px-2 py-1 text-[11px]" placeholder="الجرعة" defaultValue={it.dose} onBlur={(e) => updateMedField(it, "dose", e.target.value)} />
+                        <input className="border border-slate-200 rounded-lg px-2 py-1 text-[11px]" placeholder="التكرار" defaultValue={it.frequency} onBlur={(e) => updateMedField(it, "frequency", e.target.value)} />
+                        <input className="border border-slate-200 rounded-lg px-2 py-1 text-[11px]" placeholder="المدة" defaultValue={it.duration} onBlur={(e) => updateMedField(it, "duration", e.target.value)} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="flex gap-2">
+                <input className={inputCls} placeholder="دواء آخر…" value={medInput} onChange={(e) => setMedInput(e.target.value)} />
+                <Btn size="sm" tone="ghost" onClick={() => addMed()}>إضافة</Btn>
+              </div>
+            </div>
+            )}
+
+            <div className="border-t border-slate-100 pt-3">
+              <p className="text-xs font-bold text-teal-700 mb-2">📝 تعليمات للمريض</p>
+              {insCatalog.length > 0 && (
+                <div className="flex gap-1.5 overflow-x-auto pb-1 mb-2">
+                  {insCatalog.map((c) => (
+                    <button key={c.id} type="button" onClick={() => addInstruction(c.name)}
+                      className="px-2.5 py-1 rounded-full text-[11px] font-semibold whitespace-nowrap bg-amber-50 text-amber-700 border border-amber-200">+ {c.name}</button>
+                  ))}
+                </div>
+              )}
+              {instructions.length > 0 && (
+                <div className="space-y-1.5 mb-2">
+                  {instructions.map((x) => (
+                    <div key={x.id} className="flex items-center justify-between bg-slate-50 rounded-lg p-2 text-xs">
+                      <span>{x.body}</span>
+                      <button onClick={() => removeInstruction(x)} className="text-rose-400 hover:text-rose-600 shrink-0">✕</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="flex gap-2">
+                <input className={inputCls} placeholder="تعليمة أخرى…" value={insInput} onChange={(e) => setInsInput(e.target.value)} />
+                <Btn size="sm" tone="ghost" onClick={() => addInstruction()}>إضافة</Btn>
+              </div>
+              {(rxItems.length > 0 || instructions.length > 0) && (
+                <div className="flex gap-2 mt-3">
+                  <Btn size="sm" className="flex-1" onClick={printRx}>🖨️ طباعة الروشتة</Btn>
+                  <Btn size="sm" tone="wa" className="flex-1" onClick={shareRx}>📤 إرسال للمريض</Btn>
+                </div>
+              )}
             </div>
           </>
         )}
@@ -3299,6 +3516,89 @@ function Modals({ modal, setModal, db, update, h, audit }) {
               setF({});
             }}>+ إضافة للقائمة</Btn>
           </div>
+        </div>
+      </Modal>
+    );
+  }
+
+  if (modal.type === "serviceOrders") {
+    const service = modal.data;
+    const linked = db.serviceDefaultOrders.filter((r) => r.serviceId === service.id);
+    const linkedIds = new Set(linked.map((x) => x.catalogId));
+    return (
+      <Modal title={`روشتة افتراضية — ${service.name}`} onClose={close}>
+        <div className="space-y-3">
+          <p className="text-xs text-slate-500">حدد الأدوية والتعليمات اللي بتتكرر مع الخدمة دي — تظهر للدكتور جاهزة يقدر يحملها بضغطة واحدة وقت كتابة الروشتة (اختياري تمامًا، ويقدر يعدلها وقتها).</p>
+          {["medication", "instruction"].map((cat) => {
+            const label = cat === "medication" ? "💊 الأدوية" : "📝 التعليمات";
+            const options = db.medOrderCatalog.filter((c) => c.category === cat && c.active && (!c.specialtyId || c.specialtyId === (service.specialtyId || "")));
+            return (
+              <div key={cat} className="border-t border-slate-100 pt-3">
+                <p className="text-xs font-bold text-teal-700 mb-2">{label}</p>
+                {options.length === 0 ? <p className="text-xs text-slate-400">لا توجد {cat === "medication" ? "أدوية" : "تعليمات"} مناسبة لتخصص هذه الخدمة بعد — أضفها من "الحسابات" أولاً.</p> : (
+                  <div className="flex flex-wrap gap-2">
+                    {options.map((c) => {
+                      const on = linkedIds.has(c.id);
+                      return (
+                        <button key={c.id} type="button" onClick={() => {
+                          update((d) => {
+                            if (on) d.serviceDefaultOrders = d.serviceDefaultOrders.filter((x) => !(x.serviceId === service.id && x.catalogId === c.id));
+                            else d.serviceDefaultOrders.push({ id: uid(), serviceId: service.id, catalogId: c.id });
+                            return d;
+                          }, `${on ? "إزالة" : "ربط"} ${c.name} بخدمة: ${service.name}`);
+                        }} className={`px-2.5 py-1 rounded-full text-[11px] font-semibold whitespace-nowrap border ${on ? "bg-teal-700 text-white border-teal-700" : "bg-white text-slate-600 border-slate-200"}`}>
+                          {on ? "✓ " : "+ "}{c.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </Modal>
+    );
+  }
+
+  if (modal.type === "medOrder") {
+    const category = f.category !== undefined ? f.category : ((modal.data && modal.data.category) || "medication");
+    const isMed = category === "medication";
+    return (
+      <Modal title={edit ? `تعديل ${isMed ? "دواء" : "تعليمة"}` : `إضافة ${isMed ? "دواء" : "تعليمة"}`} onClose={close}>
+        <div className="space-y-3">
+          <Field label={isMed ? "اسم الدواء" : "نص التعليمة"}>
+            {isMed ? <input className={inputCls} placeholder="مثال: أموكسيسيلين 500" value={f.name || ""} onChange={set("name")} />
+              : <textarea rows={2} className={inputCls} placeholder="مثال: تجنب الأطعمة الصلبة لمدة أسبوع" value={f.name || ""} onChange={set("name")} />}
+          </Field>
+          {isMed && <Field label="الجرعة الافتراضية (اختياري — تتحط تلقائي في الروشتة وتقدر تعدلها)">
+            <input className={inputCls} placeholder="مثال: قرص كل 8 ساعات لمدة 5 أيام" value={f.defaultDose || ""} onChange={set("defaultDose")} />
+          </Field>}
+          <Field label="التخصص (اختياري — يظهر فقط للأطباء في هذا التخصص)">
+            <select className={inputCls} value={f.specialtyId || ""} onChange={set("specialtyId")}>
+              <option value="">— مشترك بين كل التخصصات —</option>
+              {db.specialties.filter((s) => s.active).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          </Field>
+          {edit && (
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={f.active !== false} onChange={(e) => setF({ ...f, active: e.target.checked })} />
+              <span>فعّال (يظهر في الاختيار السريع)</span>
+            </label>
+          )}
+          <Btn className="w-full" onClick={() => {
+            if (!f.name || !f.name.trim()) return;
+            update((d) => {
+              if (edit) {
+                const x = d.medOrderCatalog.find((y) => y.id === edit.id);
+                x.name = f.name.trim(); x.defaultDose = f.defaultDose || ""; x.specialtyId = f.specialtyId || ""; x.active = f.active !== false;
+              } else {
+                d.medOrderCatalog.push({ id: uid(), category, name: f.name.trim(), defaultDose: f.defaultDose || "", specialtyId: f.specialtyId || "", active: true, sortOrder: 0 });
+              }
+              return d;
+            }, edit ? `تعديل ${isMed ? "دواء" : "تعليمة"}: ${f.name}` : `إضافة ${isMed ? "دواء" : "تعليمة"}: ${f.name}`);
+            close();
+          }}>حفظ</Btn>
         </div>
       </Modal>
     );
