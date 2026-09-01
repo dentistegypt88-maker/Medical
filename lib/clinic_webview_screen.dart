@@ -3,7 +3,9 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:permission_handler/permission_handler.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:webview_flutter_android/webview_flutter_android.dart';
 
 import 'app_config.dart';
 
@@ -45,6 +47,22 @@ class _ClinicWebViewScreenState extends State<ClinicWebViewScreen> {
           },
         ),
       );
+    // The GPS-verified attendance check-in calls navigator.geolocation from
+    // inside the page. A WebView geolocation prompt alone doesn't grant the
+    // OS-level location permission on Android, so request it ourselves and
+    // feed the result back to the WebView's prompt.
+    final platform = _controller.platform;
+    if (platform is AndroidWebViewController) {
+      platform.setGeolocationPermissionsPromptCallbacks(
+        onShowPrompt: (request) async {
+          final status = await Permission.location.request();
+          return GeolocationPermissionsResponse(
+            allow: status.isGranted,
+            retain: true,
+          );
+        },
+      );
+    }
     unawaited(_load());
   }
 

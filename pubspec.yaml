@@ -40,6 +40,9 @@ dependencies:
   webview_flutter_android: ^4.3.4
   webview_flutter_wkwebview: ^3.18.0
   http: ^1.2.0
+  # Requests the OS-level location permission the GPS attendance check-in
+  # needs — a WebView geolocation prompt alone isn't enough on Android.
+  permission_handler: ^11.3.1
 
   flutter_localizations:
     sdk: flutter
