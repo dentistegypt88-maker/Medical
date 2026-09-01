@@ -39,6 +39,7 @@ dependencies:
   webview_flutter: ^4.10.0
   webview_flutter_android: ^4.3.4
   webview_flutter_wkwebview: ^3.18.0
+  http: ^1.2.0
 
   flutter_localizations:
     sdk: flutter

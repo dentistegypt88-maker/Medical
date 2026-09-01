@@ -1,14 +1,23 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:webview_flutter/webview_flutter.dart';
 
 import 'app_config.dart';
 
 /// Hosts the live clinic web app in a native WebView, with the bits a bare
 /// WebView doesn't give you for free: a branded splash while it boots, a
-/// retry screen on connection failure, pull-to-refresh, and Android
-/// back-button support that navigates the web app's own history first.
+/// retry screen on connection failure, and Android back-button support that
+/// navigates the web app's own history first.
+///
+/// Supabase's gateway unconditionally rewrites a GET response's
+/// `text/html` content-type to `text/plain` (documented platform behavior,
+/// not specific to this project) — so simply navigating the WebView to
+/// [AppConfig.clinicAppUrl] renders the raw source instead of the page.
+/// Fetching the bytes ourselves and handing them to [loadHtmlString]
+/// bypasses that entirely, since it never looks at the server's headers.
 class ClinicWebViewScreen extends StatefulWidget {
   const ClinicWebViewScreen({super.key});
 
@@ -31,33 +40,41 @@ class _ClinicWebViewScreenState extends State<ClinicWebViewScreen> {
       ..setBackgroundColor(const Color(AppConfig.brandBackground))
       ..setNavigationDelegate(
         NavigationDelegate(
-          onPageStarted: (_) {
-            if (mounted) setState(() => _state = _LoadState.loading);
-          },
           onPageFinished: (_) {
             if (mounted) setState(() => _state = _LoadState.ready);
           },
-          onWebResourceError: (error) {
-            // Ignore sub-resource errors (fonts/CDN hiccups); only bail out
-            // to the retry screen for the main frame failing to load.
-            if (error.isForMainFrame ?? true) {
-              if (mounted) {
-                setState(() {
-                  _state = _LoadState.error;
-                  _errorMessage = error.description;
-                });
-              }
-            }
-          },
         ),
-      )
-      ..loadRequest(Uri.parse(AppConfig.clinicAppUrl));
+      );
+    unawaited(_load());
   }
 
-  Future<void> _reload() async {
-    setState(() => _state = _LoadState.loading);
-    await _controller.reload();
+  Future<void> _load() async {
+    setState(() {
+      _state = _LoadState.loading;
+      _errorMessage = null;
+    });
+    try {
+      final response = await http
+          .get(Uri.parse(AppConfig.clinicAppUrl))
+          .timeout(const Duration(seconds: 20));
+      if (response.statusCode != 200) {
+        throw Exception('HTTP ${response.statusCode}');
+      }
+      // Decode as UTF-8 explicitly: the server's mislabeled content-type
+      // has no charset, so trusting response.body's own guess garbles
+      // Arabic text.
+      final html = utf8.decode(response.bodyBytes);
+      await _controller.loadHtmlString(html, baseUrl: AppConfig.clinicAppUrl);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _state = _LoadState.error;
+        _errorMessage = '$e';
+      });
+    }
   }
+
+  Future<void> _reload() => _load();
 
   Future<bool> _handleBack() async {
     if (await _controller.canGoBack()) {
