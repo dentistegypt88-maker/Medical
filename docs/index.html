@@ -95,6 +95,11 @@ const COLS = {
     from: (r) => ({ id: r.id, name: r.name_ar, active: r.active !== false }),
     to: (o) => ({ id: o.id, clinic_id: CID, code: "jt_" + String(o.id).slice(0, 8), name_ar: o.name, active: o.active !== false }),
   },
+  jobTitlePerms: {
+    table: "job_title_permissions",
+    from: (r) => ({ id: r.id, jobTitleId: r.job_title_id, code: r.permission_code, granted: r.granted !== false }),
+    to: (o) => ({ id: o.id, clinic_id: CID, job_title_id: o.jobTitleId, permission_code: o.code, granted: o.granted !== false }),
+  },
   employees: {
     table: "members", isRow: (r) => r.role === "staff",
     from: (r) => ({ id: r.id, name: r.name, role: es(r.job_title), salary: num(r.base_salary), perms: r.perms || {}, email: es(r.email) }),
@@ -157,10 +162,22 @@ const COLS = {
   },
 };
 
+/* ربط الصلاحيات البسيطة اللي بيستخدمها التطبيق بأكواد كتالوج الصلاحيات الرسمي */
+const PERM_KEY_TO_CODE = { appts: "appointments_view", collect: "payments_create", patients: "patients_view", inventory: "inventory_view" };
+const PERM_LABELS = { appts: "المواعيد والحجز", collect: "التحصيل", patients: "المرضى والشيتات", inventory: "المخزن" };
+const defaultPermsForJobTitle = (jobTitlePerms, jobTitleId) => {
+  const out = {};
+  Object.entries(PERM_KEY_TO_CODE).forEach(([k, code]) => {
+    const row = jobTitlePerms.find((x) => x.jobTitleId === jobTitleId && x.code === code);
+    out[k] = row ? row.granted : false;
+  });
+  return out;
+};
+
 /* تحميل كل البيانات المسموح بها لهذا المستخدم (الحماية من قاعدة البيانات نفسها) */
 async function loadAll(member) {
   CID = member.clinic_id;
-  const tables = ["members", "contracts", "patients", "appointments", "treatment_plans", "medical_records", "payments", "expenses", "inventory_items", "lab_cases", "attendance", "payroll_tx", "audit_logs", "clinics", "specialties", "job_titles"];
+  const tables = ["members", "contracts", "patients", "appointments", "treatment_plans", "medical_records", "payments", "expenses", "inventory_items", "lab_cases", "attendance", "payroll_tx", "audit_logs", "clinics", "specialties", "job_titles", "job_title_permissions"];
   const res = {};
   for (const t of tables) {
     const q = sb.from(t).select("*").limit(5000);
@@ -193,6 +210,7 @@ async function loadAll(member) {
     payrollTx: res.payroll_tx.map(COLS.payrollTx.from),
     specialties: res.specialties.map(COLS.specialties.from),
     jobTitles: res.job_titles.map(COLS.jobTitles.from),
+    jobTitlePerms: res.job_title_permissions.map(COLS.jobTitlePerms.from),
     logs: auditRows,
     auditFlags: auditRows.filter((x) => x.sensitive),
   };
@@ -1553,6 +1571,7 @@ function Settings({ db, update, setModal }) {
             {db.jobTitles.map((j) => (
               <span key={j.id} className={`flex items-center gap-1.5 text-xs rounded-full px-3 py-1.5 border ${j.active ? "bg-violet-50 border-violet-200 text-violet-800" : "bg-slate-50 border-slate-200 text-slate-400"}`}>
                 {j.name}
+                <button title="الصلاحيات الافتراضية" onClick={() => setModal({ type: "jobTitlePerms", data: j })} className="hover:text-violet-900">🔑</button>
                 <button onClick={() => setModal({ type: "jobTitle", data: { edit: j } })} className="hover:text-violet-900">✏️</button>
                 <button onClick={() => {
                   if (!window.confirm(`حذف وظيفة "${j.name}"؟`)) return;
@@ -2161,17 +2180,55 @@ function Modals({ modal, setModal, db, update, h, audit }) {
     );
   }
 
+  if (modal.type === "jobTitlePerms") {
+    const jt = modal.data;
+    const initial = defaultPermsForJobTitle(db.jobTitlePerms, jt.id);
+    const val = (k) => (f[k] !== undefined ? f[k] : initial[k]);
+    return (
+      <Modal title={`الصلاحيات الافتراضية — ${jt.name}`} onClose={close}>
+        <div className="space-y-3">
+          <p className="text-xs text-slate-500">لما تضيف موظف جديد بالوظيفة دي، هتتفعّل له الصلاحيات دي تلقائي — وتقدر تعدّل صلاحيات أي موظف لوحده بعد كده من شاشته.</p>
+          <div className="grid grid-cols-2 gap-1.5 text-xs">
+            {Object.entries(PERM_LABELS).map(([k, label]) => (
+              <label key={k} className={`flex items-center gap-1.5 rounded-lg border p-2 cursor-pointer ${val(k) ? "border-teal-600 bg-teal-50" : "border-slate-200"}`}>
+                <input type="checkbox" checked={!!val(k)} onChange={(e) => setF({ ...f, [k]: e.target.checked })} />
+                <span>{label}</span>
+              </label>
+            ))}
+          </div>
+          <Btn className="w-full" onClick={() => {
+            update((d) => {
+              Object.entries(PERM_KEY_TO_CODE).forEach(([k, code]) => {
+                const granted = val(k);
+                const existing = d.jobTitlePerms.find((x) => x.jobTitleId === jt.id && x.code === code);
+                if (existing) existing.granted = granted;
+                else d.jobTitlePerms.push({ id: uid(), jobTitleId: jt.id, code, granted });
+              });
+              return d;
+            }, `تعديل الصلاحيات الافتراضية لوظيفة: ${jt.name}`);
+            close();
+          }}>حفظ الصلاحيات الافتراضية</Btn>
+        </div>
+      </Modal>
+    );
+  }
+
   if (modal.type === "employee") {
     return (
       <Modal title={edit ? "تعديل بيانات الموظف" : "إضافة موظف"} onClose={close}>
         <div className="space-y-3">
           <Field label="الاسم"><input className={inputCls} value={f.name || ""} onChange={set("name")} /></Field>
           <Field label="الوظيفة">
-            <select className={inputCls} value={f.role || ""} onChange={set("role")}>
+            <select className={inputCls} value={f.role || ""} onChange={(e) => {
+              const jt = db.jobTitles.find((j) => j.name === e.target.value);
+              if (!edit && jt) setF({ ...f, role: e.target.value, perms: defaultPermsForJobTitle(db.jobTitlePerms, jt.id) });
+              else setF({ ...f, role: e.target.value });
+            }}>
               <option value="">— اختر وظيفة —</option>
               {db.jobTitles.filter((j) => j.active).map((j) => <option key={j.id} value={j.name}>{j.name}</option>)}
             </select>
             {db.jobTitles.length === 0 && <p className="text-[11px] text-amber-600 mt-1">لا توجد وظائف بعد — أضفها من "الحسابات" أولاً.</p>}
+            {!edit && f.role && <p className="text-[11px] text-teal-600 mt-1">✓ الصلاحيات اتملت تلقائي من إعدادات الوظيفة دي — قدر تعدّلها تحت.</p>}
           </Field>
           <Field label="المرتب الشهري"><input type="number" className={inputCls} value={f.salary || ""} onChange={set("salary")} /></Field>
           <Field label="إيميل الموظف (فارغ = لا يمكنه الدخول)"><input dir="ltr" type="email" className={inputCls} placeholder="staff@example.com" value={f.email || ""} onChange={set("email")} /></Field>
