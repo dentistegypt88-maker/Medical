@@ -82,8 +82,18 @@ const num = (v) => Number(v) || 0;
 const COLS = {
   doctors: {
     table: "members", isRow: (r) => r.role === "doctor",
-    from: (r) => ({ id: r.id, name: r.name, specialty: es(r.specialty), commission: num(r.commission_pct), email: es(r.email) }),
-    to: (o) => ({ id: o.id, clinic_id: CID, role: "doctor", name: o.name, specialty: o.specialty || "", commission_pct: o.commission || 0, email: nn(o.email) }),
+    from: (r) => ({ id: r.id, name: r.name, specialty: es(r.specialty), specialtyId: es(r.specialty_id), commission: num(r.commission_pct), email: es(r.email) }),
+    to: (o) => ({ id: o.id, clinic_id: CID, role: "doctor", name: o.name, specialty: o.specialty || "", specialty_id: nn(o.specialtyId), commission_pct: o.commission || 0, email: nn(o.email) }),
+  },
+  specialties: {
+    table: "specialties",
+    from: (r) => ({ id: r.id, name: r.name_ar, active: r.active !== false }),
+    to: (o) => ({ id: o.id, clinic_id: CID, code: "sp_" + String(o.id).slice(0, 8), name_ar: o.name, active: o.active !== false }),
+  },
+  jobTitles: {
+    table: "job_titles",
+    from: (r) => ({ id: r.id, name: r.name_ar, active: r.active !== false }),
+    to: (o) => ({ id: o.id, clinic_id: CID, code: "jt_" + String(o.id).slice(0, 8), name_ar: o.name, active: o.active !== false }),
   },
   employees: {
     table: "members", isRow: (r) => r.role === "staff",
@@ -150,7 +160,7 @@ const COLS = {
 /* تحميل كل البيانات المسموح بها لهذا المستخدم (الحماية من قاعدة البيانات نفسها) */
 async function loadAll(member) {
   CID = member.clinic_id;
-  const tables = ["members", "contracts", "patients", "appointments", "treatment_plans", "medical_records", "payments", "expenses", "inventory_items", "lab_cases", "attendance", "payroll_tx", "audit_logs", "clinics"];
+  const tables = ["members", "contracts", "patients", "appointments", "treatment_plans", "medical_records", "payments", "expenses", "inventory_items", "lab_cases", "attendance", "payroll_tx", "audit_logs", "clinics", "specialties", "job_titles"];
   const res = {};
   for (const t of tables) {
     const q = sb.from(t).select("*").limit(5000);
@@ -181,6 +191,8 @@ async function loadAll(member) {
     labCases: res.lab_cases.map(COLS.labCases.from),
     attendance: res.attendance.map(COLS.attendance.from),
     payrollTx: res.payroll_tx.map(COLS.payrollTx.from),
+    specialties: res.specialties.map(COLS.specialties.from),
+    jobTitles: res.job_titles.map(COLS.jobTitles.from),
     logs: auditRows,
     auditFlags: auditRows.filter((x) => x.sensitive),
   };
@@ -1509,6 +1521,49 @@ function Settings({ db, update, setModal }) {
         </Field>
         <p className="text-xs text-slate-400 mt-2">⭐ نظام الولاء: يكسب المريض {POINTS_PER_100} نقاط لكل 100 ج.م مدفوعة، والنقطة = 1 ج.م خصم.</p>
       </Card>
+
+      <div className="flex justify-between items-center">
+        <h2 className="font-bold text-teal-900">التخصصات الطبية</h2>
+        <Btn size="sm" onClick={() => setModal({ type: "specialty" })}>+ تخصص</Btn>
+      </div>
+      <Card className="p-3">
+        {db.specialties.length === 0 ? <Empty text="لا توجد تخصصات — أضف تخصصات هنا قبل إضافة الأطباء" /> : (
+          <div className="flex flex-wrap gap-2">
+            {db.specialties.map((s) => (
+              <span key={s.id} className={`flex items-center gap-1.5 text-xs rounded-full px-3 py-1.5 border ${s.active ? "bg-teal-50 border-teal-200 text-teal-800" : "bg-slate-50 border-slate-200 text-slate-400"}`}>
+                {s.name}
+                <button onClick={() => setModal({ type: "specialty", data: { edit: s } })} className="hover:text-teal-900">✏️</button>
+                <button onClick={() => {
+                  if (!window.confirm(`حذف تخصص "${s.name}"؟`)) return;
+                  update((d) => { d.specialties = d.specialties.filter((x) => x.id !== s.id); return d; }, "حذف تخصص: " + s.name);
+                }} className="hover:text-rose-600">✕</button>
+              </span>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      <div className="flex justify-between items-center">
+        <h2 className="font-bold text-teal-900">الوظائف (للموظفين)</h2>
+        <Btn size="sm" onClick={() => setModal({ type: "jobTitle" })}>+ وظيفة</Btn>
+      </div>
+      <Card className="p-3">
+        {db.jobTitles.length === 0 ? <Empty text="لا توجد وظائف — أضف وظائف هنا قبل إضافة الموظفين" /> : (
+          <div className="flex flex-wrap gap-2">
+            {db.jobTitles.map((j) => (
+              <span key={j.id} className={`flex items-center gap-1.5 text-xs rounded-full px-3 py-1.5 border ${j.active ? "bg-violet-50 border-violet-200 text-violet-800" : "bg-slate-50 border-slate-200 text-slate-400"}`}>
+                {j.name}
+                <button onClick={() => setModal({ type: "jobTitle", data: { edit: j } })} className="hover:text-violet-900">✏️</button>
+                <button onClick={() => {
+                  if (!window.confirm(`حذف وظيفة "${j.name}"؟`)) return;
+                  update((d) => { d.jobTitles = d.jobTitles.filter((x) => x.id !== j.id); return d; }, "حذف وظيفة: " + j.name);
+                }} className="hover:text-rose-600">✕</button>
+              </span>
+            ))}
+          </div>
+        )}
+      </Card>
+
       <div className="flex justify-between items-center">
         <h2 className="font-bold text-teal-900">حسابات الأطباء</h2>
         <Btn size="sm" onClick={() => setModal({ type: "doctor" })}>+ طبيب</Btn>
@@ -2048,12 +2103,76 @@ function Modals({ modal, setModal, db, update, h, audit }) {
     );
   }
 
+  if (modal.type === "specialty") {
+    return (
+      <Modal title={edit ? "تعديل تخصص" : "إضافة تخصص طبي"} onClose={close}>
+        <div className="space-y-3">
+          <Field label="اسم التخصص"><input className={inputCls} placeholder="مثال: أسنان، جلدية، عظام" value={f.name || ""} onChange={set("name")} /></Field>
+          {edit && (
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={f.active !== false} onChange={(e) => setF({ ...f, active: e.target.checked })} />
+              <span>تخصص فعّال (يظهر عند إضافة طبيب جديد)</span>
+            </label>
+          )}
+          <Btn className="w-full" onClick={() => {
+            if (!f.name || !f.name.trim()) return;
+            update((d) => {
+              if (edit) {
+                const x = d.specialties.find((y) => y.id === edit.id);
+                x.name = f.name.trim(); x.active = f.active !== false;
+              } else {
+                d.specialties.push({ id: uid(), name: f.name.trim(), active: true });
+              }
+              return d;
+            }, edit ? `تعديل تخصص: ${f.name}` : `إضافة تخصص: ${f.name}`);
+            close();
+          }}>حفظ</Btn>
+        </div>
+      </Modal>
+    );
+  }
+
+  if (modal.type === "jobTitle") {
+    return (
+      <Modal title={edit ? "تعديل وظيفة" : "إضافة وظيفة"} onClose={close}>
+        <div className="space-y-3">
+          <Field label="اسم الوظيفة"><input className={inputCls} placeholder="مثال: سكرتيرة، تمريض، فني أشعة" value={f.name || ""} onChange={set("name")} /></Field>
+          {edit && (
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={f.active !== false} onChange={(e) => setF({ ...f, active: e.target.checked })} />
+              <span>وظيفة فعّالة (تظهر عند إضافة موظف جديد)</span>
+            </label>
+          )}
+          <Btn className="w-full" onClick={() => {
+            if (!f.name || !f.name.trim()) return;
+            update((d) => {
+              if (edit) {
+                const x = d.jobTitles.find((y) => y.id === edit.id);
+                x.name = f.name.trim(); x.active = f.active !== false;
+              } else {
+                d.jobTitles.push({ id: uid(), name: f.name.trim(), active: true });
+              }
+              return d;
+            }, edit ? `تعديل وظيفة: ${f.name}` : `إضافة وظيفة: ${f.name}`);
+            close();
+          }}>حفظ</Btn>
+        </div>
+      </Modal>
+    );
+  }
+
   if (modal.type === "employee") {
     return (
       <Modal title={edit ? "تعديل بيانات الموظف" : "إضافة موظف"} onClose={close}>
         <div className="space-y-3">
           <Field label="الاسم"><input className={inputCls} value={f.name || ""} onChange={set("name")} /></Field>
-          <Field label="الوظيفة"><input className={inputCls} value={f.role || ""} onChange={set("role")} /></Field>
+          <Field label="الوظيفة">
+            <select className={inputCls} value={f.role || ""} onChange={set("role")}>
+              <option value="">— اختر وظيفة —</option>
+              {db.jobTitles.filter((j) => j.active).map((j) => <option key={j.id} value={j.name}>{j.name}</option>)}
+            </select>
+            {db.jobTitles.length === 0 && <p className="text-[11px] text-amber-600 mt-1">لا توجد وظائف بعد — أضفها من "الحسابات" أولاً.</p>}
+          </Field>
           <Field label="المرتب الشهري"><input type="number" className={inputCls} value={f.salary || ""} onChange={set("salary")} /></Field>
           <Field label="إيميل الموظف (فارغ = لا يمكنه الدخول)"><input dir="ltr" type="email" className={inputCls} placeholder="staff@example.com" value={f.email || ""} onChange={set("email")} /></Field>
           <Field label="صلاحيات الموظف — يحددها المالك فقط">
@@ -2141,7 +2260,16 @@ function Modals({ modal, setModal, db, update, h, audit }) {
       <Modal title={edit ? "تعديل بيانات الطبيب" : "إضافة طبيب (حساب منفصل)"} onClose={close}>
         <div className="space-y-3">
           <Field label="الاسم"><input className={inputCls} value={f.name || ""} onChange={set("name")} /></Field>
-          <Field label="التخصص"><input className={inputCls} value={f.specialty || ""} onChange={set("specialty")} /></Field>
+          <Field label="التخصص">
+            <select className={inputCls} value={f.specialtyId || ""} onChange={(e) => {
+              const sp = db.specialties.find((s) => s.id === e.target.value);
+              setF({ ...f, specialtyId: e.target.value, specialty: sp ? sp.name : "" });
+            }}>
+              <option value="">— اختر تخصص —</option>
+              {db.specialties.filter((s) => s.active).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+            {db.specialties.length === 0 && <p className="text-[11px] text-amber-600 mt-1">لا توجد تخصصات بعد — أضفها من "الحسابات" أولاً.</p>}
+          </Field>
           <Field label="نسبة الطبيب (%)"><input type="number" className={inputCls} value={f.commission || ""} onChange={set("commission")} /></Field>
           <Field label="إيميل الطبيب (هيسجل بيه دخوله)"><input dir="ltr" type="email" className={inputCls} placeholder="doctor@example.com" value={f.email || ""} onChange={set("email")} /></Field>
           <Btn className="w-full" onClick={() => {
@@ -2149,9 +2277,9 @@ function Modals({ modal, setModal, db, update, h, audit }) {
             update((d) => {
               if (edit) {
                 const x = d.doctors.find((y) => y.id === edit.id);
-                x.name = f.name; x.specialty = f.specialty || ""; x.commission = Number(f.commission || 0); x.email = f.email || x.email;
+                x.name = f.name; x.specialty = f.specialty || ""; x.specialtyId = f.specialtyId || ""; x.commission = Number(f.commission || 0); x.email = f.email || x.email;
               } else {
-                d.doctors.push({ id: uid(), name: f.name, specialty: f.specialty || "", commission: Number(f.commission || 0), email: f.email || "" });
+                d.doctors.push({ id: uid(), name: f.name, specialty: f.specialty || "", specialtyId: f.specialtyId || "", commission: Number(f.commission || 0), email: f.email || "" });
               }
               return d;
             }, edit ? `تعديل بيانات الطبيب: ${f.name}` : `إنشاء حساب طبيب: ${f.name}`);
