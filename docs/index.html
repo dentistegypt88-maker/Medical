@@ -222,8 +222,8 @@ const COLS = {
 };
 
 /* ربط الصلاحيات البسيطة اللي بيستخدمها التطبيق بأكواد كتالوج الصلاحيات الرسمي */
-const PERM_KEY_TO_CODE = { appts: "appointments_view", collect: "payments_create", patients: "patients_view", inventory: "inventory_view" };
-const PERM_LABELS = { appts: "المواعيد والحجز", collect: "التحصيل", patients: "المرضى والشيتات", inventory: "المخزن" };
+const PERM_KEY_TO_CODE = { appts: "appointments_view", collect: "payments_create", patients: "patients_view", inventory: "inventory_view", payroll: "payroll_tx_create" };
+const PERM_LABELS = { appts: "المواعيد والحجز", collect: "التحصيل", patients: "المرضى والشيتات", inventory: "المخزن", payroll: "مكافآت وخصومات الموظفين" };
 const defaultPermsForJobTitle = (jobTitlePerms, jobTitleId) => {
   const out = {};
   Object.entries(PERM_KEY_TO_CODE).forEach(([k, code]) => {
@@ -864,6 +864,7 @@ function ClinicApp({ boot }) {
     ...(h.can("appts") ? [["appts", "📅", "المواعيد"]] : []),
     ...(h.can("patients") ? [["patients", "🧑‍🤝‍🧑", "المرضى"]] : []),
     ...(h.can("inventory") ? [["inv", "📦", "المخزن"]] : []),
+    ...(h.can("payroll") ? [["payroll", "💰", "مكافآت وخصومات"]] : []),
     ["myattend", "🕐", "حضوري"],
   ];
   const tabs = h.isOwner ? ownerTabs : h.isStaff ? staffTabs : doctorTabs;
@@ -907,6 +908,7 @@ function ClinicApp({ boot }) {
             {tab === "lab" && h.isOwner && <Lab db={db} h={h} update={update} setModal={setModal} />}
             {tab === "staff" && h.isOwner && <Staff db={db} update={update} setModal={setModal} />}
             {tab === "inv" && (h.isOwner || h.can("inventory")) && <Inventory db={db} update={update} setModal={setModal} audit={audit} h={h} />}
+            {tab === "payroll" && !h.isOwner && h.can("payroll") && <PayrollActions db={db} update={update} setModal={setModal} h={h} />}
             {tab === "logs" && h.isOwner && <Logs db={db} />}
             {tab === "watch" && h.isOwner && <Watchtower db={db} />}
             {tab === "settings" && h.isOwner && <Settings db={db} update={update} setModal={setModal} />}
@@ -1738,6 +1740,52 @@ function Staff({ db, update, setModal }) {
             </Card>
           );
         })}
+      </div>
+    </>
+  );
+}
+
+/* ---------- مكافآت وخصومات الموظفين (لموظف مُفوَّض من المالك — بدون رؤية كامل بيانات الموظفين) ---------- */
+function PayrollActions({ db, update, setModal, h }) {
+  const netOf = (e) => {
+    const tx = db.payrollTx.filter((x) => x.empId === e.id && !x.settled);
+    const bonus = tx.filter((x) => x.type === "مكافأة").reduce((s, x) => s + x.amount, 0);
+    const cuts = tx.filter((x) => x.type !== "مكافأة").reduce((s, x) => s + x.amount, 0);
+    return { tx, bonus, cuts, net: e.salary + bonus - cuts };
+  };
+  return (
+    <>
+      <Card className="p-4">
+        <h2 className="font-bold text-teal-900 mb-1">💰 مكافآت وخصومات الموظفين</h2>
+        <p className="text-xs text-slate-500">صلاحية منحك إياها صاحب العيادة — لتسجيل مكافأة أو خصم أو سلفة لأي موظف مع توضيح السبب.</p>
+      </Card>
+      <div className="space-y-3">
+        {db.employees.map((e) => {
+          const { tx, bonus, cuts, net } = netOf(e);
+          return (
+            <Card key={e.id} className="p-4">
+              <div className="flex items-center justify-between">
+                <p className="font-semibold">{e.name} <span className="text-xs text-slate-500">· {e.role}</span></p>
+                <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "payrollTx", data: e })}>+ مكافأة / خصم / سلفة</Btn>
+              </div>
+              <div className="bg-slate-50 rounded-xl p-3 mt-3">
+                <div className="flex flex-wrap gap-2 text-xs">
+                  {bonus > 0 && <span className="bg-emerald-50 text-emerald-700 rounded-lg px-2 py-1">مكافآت: +{fmt(bonus)}</span>}
+                  {cuts > 0 && <span className="bg-rose-50 text-rose-700 rounded-lg px-2 py-1">خصم/سلف: −{fmt(cuts)}</span>}
+                  {bonus === 0 && cuts === 0 && <span className="text-slate-400">لا توجد حركات غير مسواة حاليًا</span>}
+                </div>
+                {tx.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    {tx.map((x) => (
+                      <p key={x.id} className="text-[11px] text-slate-500">• {x.type} {fmt(x.amount)} — {x.date} {x.note && `(${x.note})`}</p>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </Card>
+          );
+        })}
+        {db.employees.length === 0 && <Card className="p-4"><Empty text="لا يوجد موظفون بعد" /></Card>}
       </div>
     </>
   );
@@ -3158,7 +3206,7 @@ function Modals({ modal, setModal, db, update, h, audit }) {
           <Field label="إيميل الموظف (فارغ = لا يمكنه الدخول)"><input dir="ltr" type="email" className={inputCls} placeholder="staff@example.com" value={f.email || ""} onChange={set("email")} /></Field>
           <Field label="صلاحيات الموظف — يحددها المالك فقط">
             <div className="grid grid-cols-2 gap-1.5 text-xs">
-              {[["appts", "المواعيد والحجز"], ["collect", "التحصيل"], ["patients", "المرضى والشيتات"], ["inventory", "المخزن"]].map(([k, label]) => (
+              {Object.entries(PERM_LABELS).map(([k, label]) => (
                 <label key={k} className={`flex items-center gap-1.5 rounded-lg border p-2 cursor-pointer ${(f.perms || {})[k] ? "border-teal-600 bg-teal-50" : "border-slate-200"}`}>
                   <input type="checkbox" checked={!!(f.perms || {})[k]}
                     onChange={(ev) => setF({ ...f, perms: { ...(f.perms || {}), [k]: ev.target.checked } })} />
@@ -3195,19 +3243,24 @@ function Modals({ modal, setModal, db, update, h, audit }) {
 
   if (modal.type === "payrollTx") {
     const e = modal.data;
+    const type = f.type || "مكافأة";
+    const reasonRequired = type === "مكافأة" || type === "خصم";
     return (
       <Modal title={`حركة مرتب — ${e.name}`} onClose={close}>
         <div className="space-y-3">
           <Field label="النوع">
-            <select className={inputCls} value={f.type || "مكافأة"} onChange={set("type")}>
+            <select className={inputCls} value={type} onChange={set("type")}>
               <option>مكافأة</option><option>خصم</option><option>سلفة</option>
             </select>
           </Field>
           <Field label="المبلغ"><input type="number" className={inputCls} value={f.amount || ""} onChange={set("amount")} /></Field>
-          <Field label="ملاحظة"><input className={inputCls} value={f.note || ""} onChange={set("note")} /></Field>
+          <Field label={reasonRequired ? `سبب ال${type} (إجباري)` : "ملاحظة (اختياري)"}>
+            <input className={inputCls} value={f.note || ""} onChange={set("note")} />
+          </Field>
           <Btn className="w-full" onClick={() => {
             if (!f.amount) return;
-            update((d) => { d.payrollTx.push({ id: uid(), empId: e.id, date: todayStr(), type: f.type || "مكافأة", amount: Number(f.amount), note: f.note || "", settled: false }); return d; }, `${f.type || "مكافأة"} ${fmt(f.amount)} لـ${e.name}`);
+            if (reasonRequired && (!f.note || f.note.trim().length < 3)) { alert(`لازم تكتب سبب ال${type}`); return; }
+            update((d) => { d.payrollTx.push({ id: uid(), empId: e.id, date: todayStr(), type, amount: Number(f.amount), note: (f.note || "").trim(), settled: false }); return d; }, `${type} ${fmt(f.amount)} لـ${e.name}${f.note ? ` — ${f.note.trim()}` : ""}`);
             close();
           }}>حفظ الحركة</Btn>
         </div>
