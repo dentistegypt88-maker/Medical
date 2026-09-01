@@ -152,8 +152,33 @@ const COLS = {
   },
   inventory: {
     table: "inventory_items",
-    from: (r) => ({ id: r.id, name: r.name, unit: es(r.unit) || "وحدة", qty: num(r.qty), min: num(r.min_qty) }),
-    to: (o) => ({ id: o.id, clinic_id: CID, name: o.name, unit: o.unit || "وحدة", qty: o.qty || 0, min_qty: o.min || 0 }),
+    from: (r) => ({ id: r.id, name: r.name, unit: es(r.unit) || "وحدة", qty: num(r.qty), min: num(r.min_qty), cost: num(r.default_unit_cost) }),
+    to: (o) => ({ id: o.id, clinic_id: CID, name: o.name, unit: o.unit || "وحدة", qty: o.qty || 0, min_qty: o.min || 0, default_unit_cost: o.cost || 0 }),
+  },
+  services: {
+    table: "clinic_services",
+    from: (r) => ({ id: r.id, name: r.name_ar, price: num(r.default_price), duration: num(r.default_duration_minutes) || 30, specialtyId: es(r.specialty_id), active: r.active !== false }),
+    to: (o) => ({ id: o.id, clinic_id: CID, name_ar: o.name, default_price: o.price || 0, default_duration_minutes: o.duration || 30, specialty_id: nn(o.specialtyId), active: o.active !== false }),
+  },
+  serviceRecipe: {
+    table: "service_consumable_recipe",
+    from: (r) => ({ id: r.id, serviceId: r.service_id, itemId: r.inventory_item_id, qty: num(r.quantity_per_service), wastagePct: num(r.wastage_pct) }),
+    to: (o) => ({ id: o.id, clinic_id: CID, service_id: o.serviceId, inventory_item_id: o.itemId, quantity_per_service: o.qty || 0, wastage_pct: o.wastagePct || 0 }),
+  },
+  suppliers: {
+    table: "suppliers",
+    from: (r) => ({ id: r.id, name: r.name, contact: es(r.contact_person), phone: es(r.phone), notes: es(r.notes), active: r.active !== false }),
+    to: (o) => ({ id: o.id, clinic_id: CID, name: o.name, contact_person: o.contact || "", phone: o.phone || "", notes: o.notes || "", active: o.active !== false }),
+  },
+  overheadCategories: {
+    table: "overhead_categories",
+    from: (r) => ({ id: r.id, name: r.name_ar, active: r.active !== false }),
+    to: (o) => ({ id: o.id, clinic_id: CID, code: "oh_" + String(o.id).slice(0, 8), name_ar: o.name, allocation_method: "time", active: o.active !== false }),
+  },
+  overheadCosts: {
+    table: "clinic_overhead_costs",
+    from: (r) => ({ id: r.id, categoryId: es(r.category_id), month: (r.period_month || "").slice(0, 7), amount: num(r.amount), notes: es(r.notes) }),
+    to: (o) => ({ id: o.id, clinic_id: CID, category_id: nn(o.categoryId), period_month: (o.month || todayStr().slice(0, 7)) + "-01", amount: o.amount || 0, notes: o.notes || "" }),
   },
   labCases: {
     table: "lab_cases",
@@ -201,7 +226,7 @@ const defaultPermsForJobTitle = (jobTitlePerms, jobTitleId) => {
 /* تحميل كل البيانات المسموح بها لهذا المستخدم (الحماية من قاعدة البيانات نفسها) */
 async function loadAll(member) {
   CID = member.clinic_id;
-  const tables = ["members", "contracts", "patients", "appointments", "treatment_plans", "medical_records", "payments", "expenses", "inventory_items", "lab_cases", "attendance", "payroll_tx", "audit_logs", "clinics", "specialties", "job_titles", "job_title_permissions", "clinic_branches", "member_branch_assignments"];
+  const tables = ["members", "contracts", "patients", "appointments", "treatment_plans", "medical_records", "payments", "expenses", "inventory_items", "lab_cases", "attendance", "payroll_tx", "audit_logs", "clinics", "specialties", "job_titles", "job_title_permissions", "clinic_branches", "member_branch_assignments", "clinic_services", "service_consumable_recipe", "suppliers", "overhead_categories", "clinic_overhead_costs", "overhead_allocation_settings"];
   const res = {};
   for (const t of tables) {
     const q = sb.from(t).select("*").limit(5000);
@@ -237,6 +262,14 @@ async function loadAll(member) {
     jobTitlePerms: res.job_title_permissions.map(COLS.jobTitlePerms.from),
     branches: res.clinic_branches.map(COLS.branches.from),
     branchAssignments: res.member_branch_assignments.map(COLS.branchAssignments.from),
+    services: res.clinic_services.map(COLS.services.from),
+    serviceRecipe: res.service_consumable_recipe.map(COLS.serviceRecipe.from),
+    suppliers: res.suppliers.map(COLS.suppliers.from),
+    overheadCategories: res.overhead_categories.map(COLS.overheadCategories.from),
+    overheadCosts: res.clinic_overhead_costs.map(COLS.overheadCosts.from),
+    overheadSettings: res.overhead_allocation_settings[0]
+      ? { expectedCases: num(res.overhead_allocation_settings[0].expected_monthly_cases) || 300, targetMarginPct: num(res.overhead_allocation_settings[0].target_margin_pct) || 30 }
+      : { expectedCases: 300, targetMarginPct: 30 },
     logs: auditRows,
     auditFlags: auditRows.filter((x) => x.sensitive),
   };
@@ -269,6 +302,13 @@ async function pushDiff(prev, next) {
     }));
   }
   if (next.clinicName !== prev.clinicName) ops.push(() => sb.from("clinics").update({ name: next.clinicName }).eq("id", CID));
+  if (JSON.stringify(next.overheadSettings) !== JSON.stringify(prev.overheadSettings)) {
+    ops.push(() => sb.from("overhead_allocation_settings").upsert({
+      clinic_id: CID,
+      expected_monthly_cases: next.overheadSettings.expectedCases,
+      target_margin_pct: next.overheadSettings.targetMarginPct,
+    }, { onConflict: "clinic_id" }));
+  }
   if (!ops.length) return;
   syncBusy = true;
   try {
@@ -796,7 +836,7 @@ function ClinicApp({ boot }) {
             {tab === "appts" && <Appointments db={db} h={h} update={update} setModal={setModal} />}
             {tab === "patients" && <Patients db={db} h={h} setModal={setModal} openSheet={setPatientView} update={update} />}
             {tab === "finance" && h.isOwner && <Finance db={db} h={h} setModal={setModal} update={update} />}
-            {tab === "reports" && h.isOwner && <Reports db={db} h={h} />}
+            {tab === "reports" && h.isOwner && <Reports db={db} h={h} update={update} />}
             {tab === "contracts" && h.isOwner && <Contracts db={db} h={h} update={update} setModal={setModal} />}
             {tab === "lab" && h.isOwner && <Lab db={db} h={h} update={update} setModal={setModal} />}
             {tab === "staff" && h.isOwner && <Staff db={db} update={update} setModal={setModal} />}
@@ -1299,7 +1339,23 @@ function Finance({ db, h, setModal, update }) {
 }
 
 /* ---------- التقارير التحليلية ---------- */
-function Reports({ db, h }) {
+function Reports({ db, h, update }) {
+  const monthKey = todayStr().slice(0, 7);
+  const monthOverhead = db.overheadCosts.filter((c) => c.month === monthKey).reduce((s, c) => s + c.amount, 0);
+  const overheadPerCase = db.overheadSettings.expectedCases > 0 ? monthOverhead / db.overheadSettings.expectedCases : 0;
+  const serviceCosts = db.services.filter((s) => s.active).map((s) => {
+    const recipe = db.serviceRecipe.filter((r) => r.serviceId === s.id);
+    const consumablesCost = recipe.reduce((sum, r) => {
+      const item = db.inventory.find((i) => i.id === r.itemId);
+      const qtyWithWaste = r.qty * (1 + (r.wastagePct || 0) / 100);
+      return sum + qtyWithWaste * (item ? item.cost : 0);
+    }, 0);
+    const totalCost = consumablesCost + overheadPerCase;
+    const margin = s.price - totalCost;
+    const marginPct = s.price > 0 ? Math.round((margin / s.price) * 100) : 0;
+    return { ...s, consumablesCost, totalCost, margin, marginPct };
+  });
+
   const revByDoc = db.doctors.map((d) => ({
     label: d.name,
     value: db.payments.filter((p) => p.doctorId === d.id).reduce((s, p) => s + p.amount, 0),
@@ -1323,6 +1379,42 @@ function Reports({ db, h }) {
 
   return (
     <>
+      <Card className="p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-bold text-teal-900">💵 التكلفة الحقيقية للخدمات وهامش الربح</h2>
+        </div>
+        <div className="grid grid-cols-2 gap-3 mb-3">
+          <Field label="عدد الحالات المتوقعة شهريًا">
+            <input type="number" className={inputCls} value={db.overheadSettings.expectedCases}
+              onChange={(e) => update((d) => { d.overheadSettings = { ...d.overheadSettings, expectedCases: Number(e.target.value) || 0 }; return d; })} />
+          </Field>
+          <Field label="هامش الربح المستهدف (%)">
+            <input type="number" className={inputCls} value={db.overheadSettings.targetMarginPct}
+              onChange={(e) => update((d) => { d.overheadSettings = { ...d.overheadSettings, targetMarginPct: Number(e.target.value) || 0 }; return d; })} />
+          </Field>
+        </div>
+        <p className="text-xs text-slate-500 mb-3">مصاريف {monthKey} الثابتة: <b>{fmt(monthOverhead)}</b> ÷ {db.overheadSettings.expectedCases} حالة متوقعة = <b>{fmt(Math.round(overheadPerCase))}</b> نصيب كل حالة من المصاريف الثابتة</p>
+        {serviceCosts.length === 0 ? <Empty text="لا توجد خدمات مُعرّفة بعد — أضفها من الحسابات أولاً" /> : (
+          <div className="space-y-2">
+            {serviceCosts.map((s) => (
+              <div key={s.id} className={`rounded-xl p-3 border ${s.marginPct >= db.overheadSettings.targetMarginPct ? "bg-emerald-50 border-emerald-200" : s.margin >= 0 ? "bg-amber-50 border-amber-200" : "bg-rose-50 border-rose-200"}`}>
+                <div className="flex justify-between items-center">
+                  <p className="font-semibold text-sm">{s.name}</p>
+                  <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${s.marginPct >= db.overheadSettings.targetMarginPct ? "bg-emerald-600 text-white" : s.margin >= 0 ? "bg-amber-500 text-white" : "bg-rose-600 text-white"}`}>هامش {s.marginPct}%</span>
+                </div>
+                <div className="flex flex-wrap gap-2 mt-2 text-[11px]">
+                  <span className="bg-white rounded-lg px-2 py-1 border border-slate-200">السعر: <b>{fmt(s.price)}</b></span>
+                  <span className="bg-white rounded-lg px-2 py-1 border border-slate-200">مستهلكات: <b>{fmt(Math.round(s.consumablesCost))}</b></span>
+                  <span className="bg-white rounded-lg px-2 py-1 border border-slate-200">نصيب المصاريف الثابتة: <b>{fmt(Math.round(overheadPerCase))}</b></span>
+                  <span className="bg-white rounded-lg px-2 py-1 border border-slate-200">التكلفة الكلية: <b>{fmt(Math.round(s.totalCost))}</b></span>
+                  <span className="bg-white rounded-lg px-2 py-1 border border-slate-200">صافي الربح: <b>{fmt(Math.round(s.margin))}</b></span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
       <Card className="p-4">
         <h2 className="font-bold text-teal-900 mb-3">📊 دخل الأطباء (تحصيلات الحالات)</h2>
         <div className="space-y-3">{revByDoc.map((x) => <Bar key={x.label} {...x} max={maxDoc} />)}</div>
@@ -1571,7 +1663,7 @@ function Inventory({ db, update, setModal, audit, h }) {
             <Card key={i.id} className={`p-4 flex items-center gap-3 ${low ? "border-rose-200 bg-rose-50/50" : ""}`}>
               <div className="flex-1">
                 <p className="font-semibold">{i.name} {low && <span className="text-xs text-rose-600 font-bold">⚠️</span>}</p>
-                <p className="text-xs text-slate-500">الحد الأدنى: {i.min} {i.unit}</p>
+                <p className="text-xs text-slate-500">الحد الأدنى: {i.min} {i.unit}{h.isOwner && i.cost > 0 && ` · تكلفة الوحدة: ${fmt(i.cost)}`}</p>
               </div>
               <div className="flex items-center gap-2">
                 <Btn size="sm" tone="ghost" onClick={() => adjust(i, -1)}>− صرف</Btn>
@@ -1651,6 +1743,101 @@ function Settings({ db, update, setModal }) {
                   d.branchAssignments = d.branchAssignments.filter((x) => x.branchId !== b.id);
                   return d;
                 }, "حذف فرع: " + b.name);
+              }}>حذف</Btn>
+            </Card>
+          ))
+        )}
+      </div>
+
+      <div className="flex justify-between items-center">
+        <h2 className="font-bold text-teal-900">الخدمات</h2>
+        <Btn size="sm" onClick={() => setModal({ type: "service" })}>+ خدمة</Btn>
+      </div>
+      <div className="space-y-2">
+        {db.services.length === 0 ? <Card className="p-3"><Empty text="لا توجد خدمات — أضفها هنا عشان تظهر في اختيار الحجز وتقرير التكلفة" /></Card> : (
+          db.services.map((s) => (
+            <Card key={s.id} className="p-3 flex items-center gap-3">
+              <div className="flex-1 min-w-0">
+                <p className="font-semibold truncate">{s.name} {!s.active && <span className="text-[10px] bg-slate-100 text-slate-400 rounded-full px-2 py-0.5">معطّلة</span>}</p>
+                <p className="text-xs text-slate-500">{fmt(s.price)} · {s.duration} دقيقة · {db.serviceRecipe.filter((r) => r.serviceId === s.id).length} مستهلك مرتبط</p>
+              </div>
+              <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "serviceRecipe", data: s })}>🧪 المستهلكات</Btn>
+              <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "service", data: { edit: s } })}>تعديل</Btn>
+              <Btn size="sm" tone="rose" onClick={() => {
+                if (!window.confirm(`حذف خدمة "${s.name}"؟`)) return;
+                update((d) => {
+                  d.services = d.services.filter((x) => x.id !== s.id);
+                  d.serviceRecipe = d.serviceRecipe.filter((x) => x.serviceId !== s.id);
+                  return d;
+                }, "حذف خدمة: " + s.name);
+              }}>حذف</Btn>
+            </Card>
+          ))
+        )}
+      </div>
+
+      <div className="flex justify-between items-center">
+        <h2 className="font-bold text-teal-900">الموردين</h2>
+        <Btn size="sm" onClick={() => setModal({ type: "supplier" })}>+ مورد</Btn>
+      </div>
+      <div className="space-y-2">
+        {db.suppliers.length === 0 ? <Card className="p-3"><Empty text="لا يوجد موردين مسجلين" /></Card> : (
+          db.suppliers.map((s) => (
+            <Card key={s.id} className="p-3 flex items-center gap-3">
+              <div className="flex-1 min-w-0">
+                <p className="font-semibold truncate">{s.name}</p>
+                <p className="text-xs text-slate-500">{s.contact || "—"} {s.phone && `· ${s.phone}`}</p>
+              </div>
+              <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "supplier", data: { edit: s } })}>تعديل</Btn>
+              <Btn size="sm" tone="rose" onClick={() => {
+                if (!window.confirm(`حذف المورد "${s.name}"؟`)) return;
+                update((d) => { d.suppliers = d.suppliers.filter((x) => x.id !== s.id); return d; }, "حذف مورد: " + s.name);
+              }}>حذف</Btn>
+            </Card>
+          ))
+        )}
+      </div>
+
+      <div className="flex justify-between items-center">
+        <h2 className="font-bold text-teal-900">فئات المصاريف الثابتة</h2>
+        <Btn size="sm" onClick={() => setModal({ type: "overheadCategory" })}>+ فئة</Btn>
+      </div>
+      <Card className="p-3">
+        {db.overheadCategories.length === 0 ? <Empty text="مثال: إيجار، مرتبات، مرافق، صيانة" /> : (
+          <div className="flex flex-wrap gap-2">
+            {db.overheadCategories.map((c) => (
+              <span key={c.id} className="flex items-center gap-1.5 text-xs rounded-full px-3 py-1.5 border bg-amber-50 border-amber-200 text-amber-800">
+                {c.name}
+                <button onClick={() => setModal({ type: "overheadCategory", data: { edit: c } })} className="hover:text-amber-900">✏️</button>
+                <button onClick={() => {
+                  if (!window.confirm(`حذف فئة "${c.name}"؟`)) return;
+                  update((d) => {
+                    d.overheadCategories = d.overheadCategories.filter((x) => x.id !== c.id);
+                    d.overheadCosts = d.overheadCosts.filter((x) => x.categoryId !== c.id);
+                    return d;
+                  }, "حذف فئة مصاريف: " + c.name);
+                }} className="hover:text-rose-600">✕</button>
+              </span>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      <div className="flex justify-between items-center">
+        <h2 className="font-bold text-teal-900">المصاريف الثابتة الشهرية</h2>
+        <Btn size="sm" onClick={() => setModal({ type: "overheadCost" })}>+ تسجيل مصروف</Btn>
+      </div>
+      <div className="space-y-2">
+        {db.overheadCosts.length === 0 ? <Card className="p-3"><Empty text="سجّل هنا الإيجار والمرتبات وغيرها شهريًا — بيتحسب تلقائي في تقرير تكلفة الخدمات" /></Card> : (
+          [...db.overheadCosts].sort((a, b) => b.month.localeCompare(a.month)).map((c) => (
+            <Card key={c.id} className="p-3 flex items-center gap-3">
+              <div className="flex-1 min-w-0">
+                <p className="font-semibold truncate">{db.overheadCategories.find((x) => x.id === c.categoryId)?.name || "بدون فئة"} — {c.month}</p>
+                <p className="text-xs text-slate-500">{fmt(c.amount)} {c.notes && `· ${c.notes}`}</p>
+              </div>
+              <Btn size="sm" tone="rose" onClick={() => {
+                if (!window.confirm("حذف هذا المصروف؟")) return;
+                update((d) => { d.overheadCosts = d.overheadCosts.filter((x) => x.id !== c.id); return d; }, "حذف مصروف ثابت: " + c.month);
               }}>حذف</Btn>
             </Card>
           ))
@@ -1787,14 +1974,19 @@ function ReasonModal({ modal, setModal, audit }) {
 }
 
 /* ---------- حركة مخزن بسبب ---------- */
-function StockMoveModal({ modal, setModal, audit }) {
+function StockMoveModal({ modal, setModal, audit, db }) {
   const { item, delta } = modal.data;
   const isOut = delta < 0;
   const [qty, setQty] = useState(1);
   const [reason, setReason] = useState("");
+  const [supplierId, setSupplierId] = useState("");
+  const [unitCost, setUnitCost] = useState(item.cost || "");
+  const [logExpense, setLogExpense] = useState(true);
   const close = () => setModal(null);
   const n = Math.max(1, Number(qty) || 1);
   const newQty = Math.max(0, item.qty + (isOut ? -n : n));
+  const cost = Number(unitCost) || 0;
+  const purchaseTotal = n * cost;
   return (
     <Modal title={(isOut ? "صرف من" : "إضافة إلى") + " " + item.name} onClose={close}>
       <div className="space-y-3">
@@ -1802,6 +1994,25 @@ function StockMoveModal({ modal, setModal, audit }) {
         <Field label={"الكمية (" + item.unit + ")"}>
           <input type="number" min="1" className={inputCls} value={qty} onChange={(e) => setQty(e.target.value)} />
         </Field>
+        {!isOut && (
+          <>
+            <Field label="المورد (اختياري)">
+              <select className={inputCls} value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>
+                <option value="">— بدون تحديد —</option>
+                {db.suppliers.filter((s) => s.active).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </Field>
+            <Field label={"تكلفة الوحدة (ج.م) — بتتحدث بيها تكلفة الصنف"}>
+              <input type="number" step="0.01" className={inputCls} value={unitCost} onChange={(e) => setUnitCost(e.target.value)} />
+            </Field>
+            {cost > 0 && (
+              <label className="flex items-center gap-2 text-xs bg-slate-50 rounded-xl p-2.5 cursor-pointer">
+                <input type="checkbox" checked={logExpense} onChange={(e) => setLogExpense(e.target.checked)} />
+                <span>سجّل {fmt(purchaseTotal)} تلقائيًا كمصروف "مخزن"</span>
+              </label>
+            )}
+          </>
+        )}
         <Field label={isOut ? "سبب الصرف (إجباري)" : "مصدر الإضافة (إجباري)"}>
           <input className={inputCls} placeholder={isOut ? "استخدام في حالة، تلف، مرتجع…" : "شراء من مورد، مرتجع…"} value={reason} onChange={(e) => setReason(e.target.value)} />
         </Field>
@@ -1810,8 +2021,22 @@ function StockMoveModal({ modal, setModal, audit }) {
         </div>
         <Btn className="w-full" tone={isOut ? "rose" : "emerald"} onClick={() => {
           if (reason.trim().length < 3) { alert("لازم تكتب السبب"); return; }
-          audit((d) => { const x = d.inventory.find((y) => y.id === item.id); x.qty = newQty; return d; },
-            { area: "المخزن", act: isOut ? "صرف كمية" : "إضافة كمية", item: item.name,
+          const supplierName = db.suppliers.find((s) => s.id === supplierId)?.name;
+          audit((d) => {
+            const x = d.inventory.find((y) => y.id === item.id);
+            x.qty = newQty;
+            if (!isOut && cost > 0) {
+              x.cost = cost;
+              if (logExpense) {
+                d.expenses.push({
+                  id: uid(), date: todayStr(),
+                  item: `شراء ${item.name}${supplierName ? " من " + supplierName : ""}`,
+                  category: "مخزن", amount: purchaseTotal,
+                });
+              }
+            }
+            return d;
+          }, { area: "المخزن", act: isOut ? "صرف كمية" : "إضافة كمية", item: item.name,
               before: item.qty + " " + item.unit, after: newQty + " " + item.unit, reason: reason.trim() });
           close();
         }}>تأكيد</Btn>
@@ -1970,7 +2195,7 @@ function MyAttendance({ db, h, update }) {
 function Modals({ modal, setModal, db, update, h, audit }) {
   /* نافذة السبب الإجباري لأي حذف/تعديل حسّاس */
   if (modal.type === "reason") return <ReasonModal modal={modal} setModal={setModal} audit={audit} />;
-  if (modal.type === "stockMove") return <StockMoveModal modal={modal} setModal={setModal} audit={audit} />;
+  if (modal.type === "stockMove") return <StockMoveModal modal={modal} setModal={setModal} audit={audit} db={db} />;
   const [f, setF] = useState(modal.data && modal.data.edit ? { ...modal.data.edit } : {});
   const edit = modal.data && modal.data.edit;
   const close = () => setModal(null);
@@ -2042,6 +2267,16 @@ function Modals({ modal, setModal, db, update, h, audit }) {
             <Field label="الوقت"><input type="time" className={inputCls} value={f.time || ""} onChange={set("time")} /></Field>
           </div>
           <Field label="الخدمة"><input className={inputCls} placeholder="كشف، حشو، جلسة…" value={f.service || ""} onChange={set("service")} /></Field>
+          {db.services.filter((s) => s.active).length > 0 && (
+            <div className="flex gap-1.5 overflow-x-auto pb-1 -mt-1">
+              {db.services.filter((s) => s.active).map((s) => (
+                <button key={s.id} type="button" onClick={() => setF({ ...f, service: s.name, price: s.price })}
+                  className="px-2.5 py-1 rounded-full text-[11px] font-semibold whitespace-nowrap bg-teal-50 text-teal-700 border border-teal-200">
+                  {s.name} · {fmt(s.price)}
+                </button>
+              ))}
+            </div>
+          )}
           <Field label="السعر (ج.م)"><input type="number" className={inputCls} value={f.price || ""} onChange={set("price")} /></Field>
           <Field label="تعاقد / نقابة (اختياري)">
             <select className={inputCls} value={autoContract} onChange={set("contractId")}>
@@ -2370,6 +2605,166 @@ function Modals({ modal, setModal, db, update, h, audit }) {
     );
   }
 
+  if (modal.type === "service") {
+    return (
+      <Modal title={edit ? "تعديل خدمة" : "إضافة خدمة"} onClose={close}>
+        <div className="space-y-3">
+          <Field label="اسم الخدمة"><input className={inputCls} placeholder="مثال: كشف، حشو، جلسة ليزر" value={f.name || ""} onChange={set("name")} /></Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="السعر (ج.م)"><input type="number" className={inputCls} value={f.price || ""} onChange={set("price")} /></Field>
+            <Field label="المدة (دقيقة)"><input type="number" className={inputCls} value={f.duration || 30} onChange={set("duration")} /></Field>
+          </div>
+          <Field label="التخصص (اختياري)">
+            <select className={inputCls} value={f.specialtyId || ""} onChange={set("specialtyId")}>
+              <option value="">— بدون تحديد —</option>
+              {db.specialties.filter((s) => s.active).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          </Field>
+          {edit && (
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={f.active !== false} onChange={(e) => setF({ ...f, active: e.target.checked })} />
+              <span>خدمة فعّالة</span>
+            </label>
+          )}
+          <Btn className="w-full" onClick={() => {
+            if (!f.name || !f.name.trim()) return;
+            update((d) => {
+              if (edit) {
+                const x = d.services.find((y) => y.id === edit.id);
+                x.name = f.name.trim(); x.price = Number(f.price) || 0; x.duration = Number(f.duration) || 30; x.specialtyId = f.specialtyId || ""; x.active = f.active !== false;
+              } else {
+                d.services.push({ id: uid(), name: f.name.trim(), price: Number(f.price) || 0, duration: Number(f.duration) || 30, specialtyId: f.specialtyId || "", active: true });
+              }
+              return d;
+            }, edit ? `تعديل خدمة: ${f.name}` : `إضافة خدمة: ${f.name}`);
+            close();
+          }}>حفظ</Btn>
+        </div>
+      </Modal>
+    );
+  }
+
+  if (modal.type === "serviceRecipe") {
+    const service = modal.data;
+    const recipe = db.serviceRecipe.filter((r) => r.serviceId === service.id);
+    return (
+      <Modal title={`مستهلكات خدمة — ${service.name}`} onClose={close}>
+        <div className="space-y-3">
+          <p className="text-xs text-slate-500">حدد الأصناف اللي بتستهلكها الخدمة دي في كل مرة، عشان يتحسب تكلفتها الحقيقية تلقائي.</p>
+          {recipe.length === 0 ? <p className="text-xs text-slate-400">لسه مفيش مستهلكات مرتبطة بالخدمة دي.</p> : (
+            <div className="space-y-1.5">
+              {recipe.map((r) => {
+                const item = db.inventory.find((i) => i.id === r.itemId);
+                return (
+                  <div key={r.id} className="flex items-center justify-between bg-slate-50 rounded-lg p-2 text-xs">
+                    <span>{item ? item.name : "صنف محذوف"} — {r.qty} {item?.unit || ""} {r.wastagePct > 0 && `(+${r.wastagePct}% هدر)`}</span>
+                    <button onClick={() => update((d) => { d.serviceRecipe = d.serviceRecipe.filter((x) => x.id !== r.id); return d; }, `إزالة مستهلك من خدمة: ${service.name}`)} className="text-rose-500 hover:text-rose-700">✕</button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <div className="border-t border-slate-100 pt-3 space-y-2">
+            <Field label="إضافة صنف">
+              <select className={inputCls} value={f.itemId || ""} onChange={set("itemId")}>
+                <option value="">— اختر صنف —</option>
+                {db.inventory.map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
+              </select>
+            </Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="الكمية لكل خدمة"><input type="number" step="0.01" className={inputCls} value={f.qty || ""} onChange={set("qty")} /></Field>
+              <Field label="نسبة هدر % (اختياري)"><input type="number" className={inputCls} value={f.wastagePct || ""} onChange={set("wastagePct")} /></Field>
+            </div>
+            <Btn className="w-full" tone="ghost" onClick={() => {
+              if (!f.itemId || !f.qty) return;
+              update((d) => {
+                d.serviceRecipe.push({ id: uid(), serviceId: service.id, itemId: f.itemId, qty: Number(f.qty), wastagePct: Number(f.wastagePct) || 0 });
+                return d;
+              }, `ربط مستهلك بخدمة: ${service.name}`);
+              setF({});
+            }}>+ إضافة للقائمة</Btn>
+          </div>
+        </div>
+      </Modal>
+    );
+  }
+
+  if (modal.type === "supplier") {
+    return (
+      <Modal title={edit ? "تعديل مورد" : "إضافة مورد"} onClose={close}>
+        <div className="space-y-3">
+          <Field label="اسم المورد"><input className={inputCls} value={f.name || ""} onChange={set("name")} /></Field>
+          <Field label="اسم المسؤول (اختياري)"><input className={inputCls} value={f.contact || ""} onChange={set("contact")} /></Field>
+          <Field label="التليفون"><input dir="ltr" className={inputCls} value={f.phone || ""} onChange={set("phone")} /></Field>
+          <Field label="ملاحظات"><input className={inputCls} value={f.notes || ""} onChange={set("notes")} /></Field>
+          <Btn className="w-full" onClick={() => {
+            if (!f.name || !f.name.trim()) return;
+            update((d) => {
+              if (edit) {
+                const x = d.suppliers.find((y) => y.id === edit.id);
+                x.name = f.name.trim(); x.contact = f.contact || ""; x.phone = f.phone || ""; x.notes = f.notes || "";
+              } else {
+                d.suppliers.push({ id: uid(), name: f.name.trim(), contact: f.contact || "", phone: f.phone || "", notes: f.notes || "", active: true });
+              }
+              return d;
+            }, edit ? `تعديل مورد: ${f.name}` : `إضافة مورد: ${f.name}`);
+            close();
+          }}>حفظ</Btn>
+        </div>
+      </Modal>
+    );
+  }
+
+  if (modal.type === "overheadCategory") {
+    return (
+      <Modal title={edit ? "تعديل فئة مصاريف" : "إضافة فئة مصاريف ثابتة"} onClose={close}>
+        <div className="space-y-3">
+          <Field label="اسم الفئة"><input className={inputCls} placeholder="مثال: إيجار، مرتبات، مرافق" value={f.name || ""} onChange={set("name")} /></Field>
+          <Btn className="w-full" onClick={() => {
+            if (!f.name || !f.name.trim()) return;
+            update((d) => {
+              if (edit) {
+                const x = d.overheadCategories.find((y) => y.id === edit.id);
+                x.name = f.name.trim();
+              } else {
+                d.overheadCategories.push({ id: uid(), name: f.name.trim(), active: true });
+              }
+              return d;
+            }, edit ? `تعديل فئة مصاريف: ${f.name}` : `إضافة فئة مصاريف: ${f.name}`);
+            close();
+          }}>حفظ</Btn>
+        </div>
+      </Modal>
+    );
+  }
+
+  if (modal.type === "overheadCost") {
+    const defaultMonth = todayStr().slice(0, 7);
+    return (
+      <Modal title="تسجيل مصروف ثابت شهري" onClose={close}>
+        <div className="space-y-3">
+          <Field label="الفئة">
+            <select className={inputCls} value={f.categoryId || ""} onChange={set("categoryId")}>
+              <option value="">— اختر فئة —</option>
+              {db.overheadCategories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </Field>
+          <Field label="الشهر"><input type="month" className={inputCls} value={f.month || defaultMonth} onChange={set("month")} /></Field>
+          <Field label="المبلغ (ج.م)"><input type="number" className={inputCls} value={f.amount || ""} onChange={set("amount")} /></Field>
+          <Field label="ملاحظات"><input className={inputCls} value={f.notes || ""} onChange={set("notes")} /></Field>
+          <Btn className="w-full" onClick={() => {
+            if (!f.categoryId || !f.amount) return;
+            update((d) => {
+              d.overheadCosts.push({ id: uid(), categoryId: f.categoryId, month: f.month || defaultMonth, amount: Number(f.amount), notes: f.notes || "" });
+              return d;
+            }, `تسجيل مصروف ثابت: ${db.overheadCategories.find((c) => c.id === f.categoryId)?.name || ""} — ${fmt(Number(f.amount))}`);
+            close();
+          }}>حفظ</Btn>
+        </div>
+      </Modal>
+    );
+  }
+
   if (modal.type === "specialty") {
     return (
       <Modal title={edit ? "تعديل تخصص" : "إضافة تخصص طبي"} onClose={close}>
@@ -2542,14 +2937,15 @@ function Modals({ modal, setModal, db, update, h, audit }) {
             <Field label="الكمية"><input type="number" className={inputCls} value={f.qty || ""} onChange={set("qty")} /></Field>
             <Field label="الحد الأدنى"><input type="number" className={inputCls} value={f.min || ""} onChange={set("min")} /></Field>
           </div>
+          <Field label="تكلفة الوحدة (ج.م) — لحساب تكلفة الخدمات"><input type="number" step="0.01" className={inputCls} value={f.cost || ""} onChange={set("cost")} /></Field>
           <Btn className="w-full" onClick={() => {
             if (!f.name) return;
             update((d) => {
               if (edit) {
                 const x = d.inventory.find((y) => y.id === edit.id);
-                x.name = f.name; x.unit = f.unit || "وحدة"; x.qty = Number(f.qty || 0); x.min = Number(f.min || 0);
+                x.name = f.name; x.unit = f.unit || "وحدة"; x.qty = Number(f.qty || 0); x.min = Number(f.min || 0); x.cost = Number(f.cost || 0);
               } else {
-                d.inventory.push({ id: uid(), name: f.name, unit: f.unit || "وحدة", qty: Number(f.qty || 0), min: Number(f.min || 0) });
+                d.inventory.push({ id: uid(), name: f.name, unit: f.unit || "وحدة", qty: Number(f.qty || 0), min: Number(f.min || 0), cost: Number(f.cost || 0) });
               }
               return d;
             }, edit ? `تعديل صنف: ${f.name}` : `إضافة صنف للمخزن: ${f.name}`);
