@@ -219,6 +219,31 @@ const COLS = {
     from: (r) => ({ id: r.id, empId: r.member_id, type: r.type, amount: num(r.amount), note: es(r.note), settled: !!r.settled, date: r.date }),
     to: (o) => ({ id: o.id, clinic_id: CID, member_id: o.empId, type: o.type, amount: o.amount, note: o.note || "", settled: !!o.settled, date: o.date }),
   },
+  encounters: {
+    table: "encounters",
+    from: (r) => ({ id: r.id, patientId: r.patient_id, doctorId: es(r.doctor_id), specialtyId: es(r.specialty_id), apptId: es(r.appointment_id), date: (r.encounter_date || "").slice(0, 10), chiefComplaint: es(r.chief_complaint), hpi: es(r.history_of_present_illness), examination: es(r.examination), assessment: es(r.assessment), plan: es(r.plan), status: r.status || "open", branchId: es(r.branch_id) }),
+    to: (o) => ({ id: o.id, clinic_id: CID, patient_id: o.patientId, doctor_id: nn(o.doctorId), specialty_id: nn(o.specialtyId), appointment_id: nn(o.apptId), encounter_date: o.date || todayStr(), chief_complaint: o.chiefComplaint || "", history_of_present_illness: o.hpi || "", examination: o.examination || "", assessment: o.assessment || "", plan: o.plan || "", status: o.status || "open", branch_id: nn(o.branchId) }),
+  },
+  encounterFieldValues: {
+    table: "encounter_field_values",
+    from: (r) => ({ id: r.id, encounterId: r.encounter_id, fieldId: r.field_id, value: r.value_json }),
+    to: (o) => ({ id: o.id, clinic_id: CID, encounter_id: o.encounterId, field_id: o.fieldId, value_json: o.value ?? null }),
+  },
+  encounterDiagnoses: {
+    table: "encounter_diagnoses",
+    from: (r) => ({ id: r.id, encounterId: r.encounter_id, patientId: r.patient_id, diagnosis: r.diagnosis, isPrimary: !!r.is_primary, notes: es(r.notes) }),
+    to: (o) => ({ id: o.id, clinic_id: CID, encounter_id: o.encounterId, patient_id: o.patientId, diagnosis: o.diagnosis, is_primary: !!o.isPrimary, notes: o.notes || "" }),
+  },
+  encounterProcedures: {
+    table: "encounter_procedures",
+    from: (r) => ({ id: r.id, encounterId: r.encounter_id, patientId: r.patient_id, doctorId: es(r.doctor_id), name: r.procedure_name, status: r.status || "done", notes: es(r.notes) }),
+    to: (o) => ({ id: o.id, clinic_id: CID, encounter_id: o.encounterId, patient_id: o.patientId, doctor_id: nn(o.doctorId), procedure_name: o.name, status: o.status || "done", notes: o.notes || "" }),
+  },
+  clinicalDocuments: {
+    table: "clinical_documents",
+    from: (r) => ({ id: r.id, patientId: r.patient_id, encounterId: es(r.encounter_id), documentType: r.document_type, title: r.title, storagePath: es(r.storage_path), notes: es(r.notes) }),
+    to: (o) => ({ id: o.id, clinic_id: CID, patient_id: o.patientId, encounter_id: nn(o.encounterId), document_type: o.documentType || "other", title: o.title, storage_path: o.storagePath || null, notes: o.notes || "" }),
+  },
 };
 
 /* ربط الصلاحيات البسيطة اللي بيستخدمها التطبيق بأكواد كتالوج الصلاحيات الرسمي */
@@ -236,7 +261,7 @@ const defaultPermsForJobTitle = (jobTitlePerms, jobTitleId) => {
 /* تحميل كل البيانات المسموح بها لهذا المستخدم (الحماية من قاعدة البيانات نفسها) */
 async function loadAll(member) {
   CID = member.clinic_id;
-  const tables = ["members", "contracts", "patients", "appointments", "treatment_plans", "medical_records", "payments", "expenses", "inventory_items", "lab_cases", "attendance", "payroll_tx", "audit_logs", "clinics", "specialties", "job_titles", "job_title_permissions", "clinic_branches", "member_branch_assignments", "clinic_services", "service_consumable_recipe", "suppliers", "overhead_categories", "clinic_overhead_costs", "overhead_allocation_settings", "purchase_invoices", "supplier_payments"];
+  const tables = ["members", "contracts", "patients", "appointments", "treatment_plans", "medical_records", "payments", "expenses", "inventory_items", "lab_cases", "attendance", "payroll_tx", "audit_logs", "clinics", "specialties", "job_titles", "job_title_permissions", "clinic_branches", "member_branch_assignments", "clinic_services", "service_consumable_recipe", "suppliers", "overhead_categories", "clinic_overhead_costs", "overhead_allocation_settings", "purchase_invoices", "supplier_payments", "encounters", "encounter_field_values", "encounter_diagnoses", "encounter_procedures", "clinical_documents", "specialty_form_templates", "specialty_form_fields"];
   const res = {};
   for (const t of tables) {
     const q = sb.from(t).select("*").limit(5000);
@@ -277,6 +302,13 @@ async function loadAll(member) {
     suppliers: res.suppliers.map(COLS.suppliers.from),
     purchaseInvoices: res.purchase_invoices.map(COLS.purchaseInvoices.from),
     supplierPayments: res.supplier_payments.map(COLS.supplierPayments.from),
+    encounters: res.encounters.map(COLS.encounters.from),
+    encounterFieldValues: res.encounter_field_values.map(COLS.encounterFieldValues.from),
+    encounterDiagnoses: res.encounter_diagnoses.map(COLS.encounterDiagnoses.from),
+    encounterProcedures: res.encounter_procedures.map(COLS.encounterProcedures.from),
+    clinicalDocuments: res.clinical_documents.map(COLS.clinicalDocuments.from),
+    specialtyFormTemplates: res.specialty_form_templates.map((r) => ({ id: r.id, specialtyId: r.specialty_id, name: r.name, active: r.active !== false })),
+    specialtyFormFields: res.specialty_form_fields.map((r) => ({ id: r.id, templateId: r.template_id, key: r.field_key, label: r.label_ar, type: r.field_type, section: r.section_key, sectionLabel: r.section_label_ar, required: !!r.required, options: r.options, unit: es(r.unit), sortOrder: r.sort_order || 0, active: r.active !== false })),
     overheadCategories: res.overhead_categories.map(COLS.overheadCategories.from),
     overheadCosts: res.clinic_overhead_costs.map(COLS.overheadCosts.from),
     overheadSettings: res.overhead_allocation_settings[0]
@@ -1182,6 +1214,7 @@ function PatientSheet({ db, h, pid, back, setModal, update, audit }) {
   if (!p) return null;
   const plans = db.plans.filter((x) => x.patientId === pid);
   const visits = db.appointments.filter((a) => a.patientId === pid).sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
+  const encounters = db.encounters.filter((x) => x.patientId === pid).sort((a, b) => b.date.localeCompare(a.date));
   const totalDue = visits.filter((a) => a.status !== "ملغي").reduce((s, a) => s + Math.max(0, (a.patientShare ?? a.price) - a.paid), 0);
   const contract = db.contracts.find((c) => c.id === p.contractId);
 
@@ -1214,6 +1247,38 @@ function PatientSheet({ db, h, pid, back, setModal, update, audit }) {
           {h.isOwner && <span className="bg-amber-50 text-amber-700 rounded-lg px-2 py-1">مستحق عليه: <b>{fmt(totalDue)}</b></span>}
           <span className="bg-yellow-50 text-yellow-700 rounded-lg px-2 py-1">⭐ رصيد النقاط: <b>{p.points || 0}</b> (تُستبدل خصماً عند الدفع)</span>
         </div>
+      </Card>
+
+      <Card className="p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-bold text-teal-900">📋 الشيت الطبي — زيارات مسجلة</h3>
+          <Btn size="sm" onClick={() => setModal({ type: "encounter", data: { patientId: pid } })}>+ زيارة جديدة</Btn>
+        </div>
+        {encounters.length === 0 ? <Empty text="لا توجد زيارات مسجلة في الشيت الطبي بعد" /> : (
+          <div className="space-y-2">
+            {encounters.map((en) => {
+              const diags = db.encounterDiagnoses.filter((x) => x.encounterId === en.id);
+              const procs = db.encounterProcedures.filter((x) => x.encounterId === en.id);
+              const docs = db.clinicalDocuments.filter((x) => x.encounterId === en.id);
+              const spec = db.specialties.find((s) => s.id === en.specialtyId);
+              return (
+                <div key={en.id} className="bg-slate-50 rounded-xl p-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="font-semibold text-sm">{en.date} · {h.dName(en.doctorId)} {spec && `· ${spec.name}`}</p>
+                      {en.chiefComplaint && <p className="text-xs text-slate-600 mt-0.5">الشكوى: {en.chiefComplaint}</p>}
+                      {en.assessment && <p className="text-xs text-slate-600 mt-0.5">التقييم: {en.assessment}</p>}
+                      {diags.length > 0 && <p className="text-xs text-rose-600 mt-1">🩺 {diags.map((x) => x.diagnosis).join(" · ")}</p>}
+                      {procs.length > 0 && <p className="text-xs text-teal-600 mt-1">🔧 {procs.map((x) => x.name).join(" · ")}</p>}
+                      {docs.length > 0 && <p className="text-xs text-sky-600 mt-1">📎 {docs.length} مرفق</p>}
+                    </div>
+                    <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "encounter", data: { patientId: pid, edit: en } })}>فتح</Btn>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </Card>
 
       <Card className="p-4">
@@ -2442,11 +2507,259 @@ function MyAttendance({ db, h, update }) {
   );
 }
 
+/* ---------- الشيت الطبي: زيارة/كشف بنموذج ديناميكي حسب تخصص الطبيب ---------- */
+function EncounterModal({ modal, setModal, db, update, h }) {
+  const { patientId } = modal.data;
+  const patient = db.patients.find((p) => p.id === patientId);
+  const [edit, setEdit] = useState(modal.data.edit || null);
+  const [doctorId, setDoctorId] = useState(edit?.doctorId || h.myDocId || "");
+  const doctor = db.doctors.find((d) => d.id === doctorId);
+  const [specialtyId, setSpecialtyId] = useState(edit?.specialtyId || doctor?.specialtyId || "");
+  const [chiefComplaint, setChiefComplaint] = useState(edit?.chiefComplaint || "");
+  const [hpi, setHpi] = useState(edit?.hpi || "");
+  const [examination, setExamination] = useState(edit?.examination || "");
+  const [assessment, setAssessment] = useState(edit?.assessment || "");
+  const [plan, setPlan] = useState(edit?.plan || "");
+  const [fieldValues, setFieldValues] = useState(() => {
+    if (!edit) return {};
+    const out = {};
+    db.encounterFieldValues.filter((v) => v.encounterId === edit.id).forEach((v) => { out[v.fieldId] = v.value; });
+    return out;
+  });
+  const [diagInput, setDiagInput] = useState("");
+  const [procInput, setProcInput] = useState("");
+  const [docType, setDocType] = useState("تحليل");
+  const [uploading, setUploading] = useState(false);
+  const [err, setErr] = useState("");
+  const close = () => setModal(null);
+
+  if (!patient) return null;
+  const template = db.specialtyFormTemplates.find((t) => t.specialtyId === specialtyId && t.active);
+  const fields = template ? db.specialtyFormFields.filter((f) => f.templateId === template.id && f.active).sort((a, b) => a.sortOrder - b.sortOrder) : [];
+  const sections = [];
+  fields.forEach((f) => { if (!sections.some((s) => s.key === f.section)) sections.push({ key: f.section, label: f.sectionLabel }); });
+
+  const diagnoses = edit ? db.encounterDiagnoses.filter((x) => x.encounterId === edit.id) : [];
+  const procedures = edit ? db.encounterProcedures.filter((x) => x.encounterId === edit.id) : [];
+  const documents = edit ? db.clinicalDocuments.filter((x) => x.encounterId === edit.id) : [];
+  const specServices = db.services.filter((s) => s.active && s.specialtyId === specialtyId);
+
+  const saveEncounter = () => {
+    if (!doctorId) { setErr("اختر الطبيب"); return; }
+    setErr("");
+    const encId = edit ? edit.id : uid();
+    const base = { id: encId, patientId, doctorId, specialtyId, apptId: edit?.apptId || "", date: edit?.date || todayStr(), chiefComplaint, hpi, examination, assessment, plan, status: "open", branchId: edit?.branchId || "" };
+    update((d) => {
+      if (edit) {
+        const x = d.encounters.find((y) => y.id === encId);
+        Object.assign(x, base);
+      } else {
+        d.encounters.push(base);
+      }
+      Object.entries(fieldValues).forEach(([fieldId, value]) => {
+        const existing = d.encounterFieldValues.find((v) => v.encounterId === encId && v.fieldId === fieldId);
+        if (existing) existing.value = value;
+        else d.encounterFieldValues.push({ id: uid(), encounterId: encId, fieldId, value });
+      });
+      return d;
+    }, `${edit ? "تعديل" : "تسجيل"} زيارة طبية لـ${patient.name}`);
+    if (edit) close();
+    else setEdit(base);
+  };
+
+  const addDiagnosis = () => {
+    if (!diagInput.trim() || !edit) return;
+    update((d) => {
+      d.encounterDiagnoses.push({ id: uid(), encounterId: edit.id, patientId, diagnosis: diagInput.trim(), isPrimary: diagnoses.length === 0, notes: "" });
+      return d;
+    }, `تشخيص لـ${patient.name}: ${diagInput.trim()}`);
+    setDiagInput("");
+  };
+  const removeDiagnosis = (x) => update((d) => { d.encounterDiagnoses = d.encounterDiagnoses.filter((y) => y.id !== x.id); return d; }, `حذف تشخيص: ${x.diagnosis}`);
+
+  const addProcedure = (name) => {
+    const n = (name || procInput).trim();
+    if (!n || !edit) return;
+    update((d) => {
+      d.encounterProcedures.push({ id: uid(), encounterId: edit.id, patientId, doctorId, name: n, status: "done", notes: "" });
+      return d;
+    }, `إجراء طبي لـ${patient.name}: ${n}`);
+    setProcInput("");
+  };
+  const removeProcedure = (x) => update((d) => { d.encounterProcedures = d.encounterProcedures.filter((y) => y.id !== x.id); return d; }, `حذف إجراء: ${x.name}`);
+
+  const handleFiles = async (fileList) => {
+    if (!fileList || !fileList.length || !edit) return;
+    setUploading(true);
+    setErr("");
+    try {
+      for (const file of Array.from(fileList)) {
+        const path = `${CID}/${patientId}/${Date.now()}-${uid()}-${file.name}`;
+        const { error } = await sb.storage.from("clinical-docs").upload(path, file);
+        if (error) throw error;
+        update((d) => {
+          d.clinicalDocuments.push({ id: uid(), patientId, encounterId: edit.id, documentType: docType, title: file.name, storagePath: path, notes: "" });
+          return d;
+        }, `رفع مرفق طبي لـ${patient.name}: ${file.name}`);
+      }
+    } catch (e) {
+      setErr("تعذر رفع الملف: " + (e.message || e));
+    } finally {
+      setUploading(false);
+    }
+  };
+  const openDoc = async (doc) => {
+    const { data, error } = await sb.storage.from("clinical-docs").createSignedUrl(doc.storagePath, 3600);
+    if (error) { alert("تعذر فتح الملف: " + error.message); return; }
+    window.open(data.signedUrl, "_blank");
+  };
+  const deleteDoc = async (doc) => {
+    if (!window.confirm(`حذف المرفق "${doc.title}"؟`)) return;
+    await sb.storage.from("clinical-docs").remove([doc.storagePath]);
+    update((d) => { d.clinicalDocuments = d.clinicalDocuments.filter((x) => x.id !== doc.id); return d; }, `حذف مرفق طبي: ${doc.title}`);
+  };
+
+  const setFieldVal = (fieldId, value) => setFieldValues({ ...fieldValues, [fieldId]: value });
+  const renderField = (f) => {
+    const val = fieldValues[f.id] ?? "";
+    if (f.type === "textarea") return <textarea rows={2} className={inputCls} value={val} onChange={(e) => setFieldVal(f.id, e.target.value)} />;
+    if (f.type === "number") return <input type="number" className={inputCls} value={val} onChange={(e) => setFieldVal(f.id, e.target.value === "" ? "" : Number(e.target.value))} />;
+    if (f.type === "date") return <input type="date" className={inputCls} value={val} onChange={(e) => setFieldVal(f.id, e.target.value)} />;
+    if (f.type === "scale") return (
+      <div className="flex items-center gap-2">
+        <input type="range" min="0" max="10" className="flex-1" value={val || 0} onChange={(e) => setFieldVal(f.id, Number(e.target.value))} />
+        <span className="text-sm font-bold text-teal-700 w-6 text-center">{val || 0}</span>
+      </div>
+    );
+    if (f.type === "select" && Array.isArray(f.options)) return (
+      <select className={inputCls} value={val} onChange={(e) => setFieldVal(f.id, e.target.value)}>
+        <option value="">— اختر —</option>
+        {f.options.map((o) => <option key={o} value={o}>{o}</option>)}
+      </select>
+    );
+    return <input type="text" className={inputCls} value={val} onChange={(e) => setFieldVal(f.id, e.target.value)} />;
+  };
+
+  return (
+    <Modal title={edit ? "زيارة طبية — " + patient.name : "زيارة جديدة — " + patient.name} onClose={close}>
+      <div className="space-y-3">
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="الطبيب">
+            <select className={inputCls} value={doctorId} disabled={!h.isOwner && !!h.myDocId}
+              onChange={(e) => { setDoctorId(e.target.value); const nd = db.doctors.find((d) => d.id === e.target.value); if (nd?.specialtyId) setSpecialtyId(nd.specialtyId); }}>
+              <option value="">— اختر —</option>
+              {db.doctors.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          </Field>
+          <Field label="التخصص">
+            <select className={inputCls} value={specialtyId} onChange={(e) => setSpecialtyId(e.target.value)}>
+              <option value="">— بدون تحديد —</option>
+              {db.specialties.filter((s) => s.active).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          </Field>
+        </div>
+        <Field label="الشكوى الرئيسية"><textarea rows={2} className={inputCls} value={chiefComplaint} onChange={(e) => setChiefComplaint(e.target.value)} /></Field>
+        <Field label="تاريخ الشكوى الحالية"><textarea rows={2} className={inputCls} value={hpi} onChange={(e) => setHpi(e.target.value)} /></Field>
+        <Field label="الفحص"><textarea rows={2} className={inputCls} value={examination} onChange={(e) => setExamination(e.target.value)} /></Field>
+
+        {sections.length > 0 && sections.map((sec) => (
+          <div key={sec.key} className="border-t border-slate-100 pt-3">
+            <p className="text-xs font-bold text-teal-700 mb-2">{sec.label}</p>
+            <div className="space-y-2">
+              {fields.filter((f) => f.section === sec.key).map((f) => (
+                <Field key={f.id} label={f.label + (f.unit ? ` (${f.unit})` : "")}>{renderField(f)}</Field>
+              ))}
+            </div>
+          </div>
+        ))}
+
+        <div className="border-t border-slate-100 pt-3 space-y-2">
+          <Field label="التقييم / التشخيص المبدئي (نص عام)"><textarea rows={2} className={inputCls} value={assessment} onChange={(e) => setAssessment(e.target.value)} /></Field>
+          <Field label="الخطة العلاجية"><textarea rows={2} className={inputCls} value={plan} onChange={(e) => setPlan(e.target.value)} /></Field>
+        </div>
+
+        {err && <p className="text-xs text-rose-600 bg-rose-50 rounded-lg p-2">{err}</p>}
+        <Btn className="w-full" onClick={saveEncounter}>{edit ? "حفظ التعديلات" : "حفظ الزيارة ومتابعة التفاصيل"}</Btn>
+
+        {edit && (
+          <>
+            <div className="border-t border-slate-100 pt-3">
+              <p className="text-xs font-bold text-teal-700 mb-2">🩺 التشخيص</p>
+              {diagnoses.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {diagnoses.map((x) => (
+                    <span key={x.id} className="flex items-center gap-1 text-xs bg-rose-50 text-rose-700 rounded-full px-2.5 py-1">
+                      {x.diagnosis} <button onClick={() => removeDiagnosis(x)} className="hover:text-rose-900">✕</button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="flex gap-2">
+                <input className={inputCls} placeholder="اكتب التشخيص واضغط إضافة" value={diagInput} onChange={(e) => setDiagInput(e.target.value)} />
+                <Btn size="sm" tone="ghost" onClick={addDiagnosis}>إضافة</Btn>
+              </div>
+            </div>
+
+            <div className="border-t border-slate-100 pt-3">
+              <p className="text-xs font-bold text-teal-700 mb-2">🔧 الإجراء الطبي المتخذ</p>
+              {specServices.length > 0 && (
+                <div className="flex gap-1.5 overflow-x-auto pb-1 mb-2">
+                  {specServices.map((s) => (
+                    <button key={s.id} type="button" onClick={() => addProcedure(s.name)}
+                      className="px-2.5 py-1 rounded-full text-[11px] font-semibold whitespace-nowrap bg-teal-50 text-teal-700 border border-teal-200">{s.name}</button>
+                  ))}
+                </div>
+              )}
+              {procedures.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {procedures.map((x) => (
+                    <span key={x.id} className="flex items-center gap-1 text-xs bg-teal-50 text-teal-700 rounded-full px-2.5 py-1">
+                      {x.name} <button onClick={() => removeProcedure(x)} className="hover:text-teal-900">✕</button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="flex gap-2">
+                <input className={inputCls} placeholder="إجراء آخر…" value={procInput} onChange={(e) => setProcInput(e.target.value)} />
+                <Btn size="sm" tone="ghost" onClick={() => addProcedure()}>إضافة</Btn>
+              </div>
+            </div>
+
+            <div className="border-t border-slate-100 pt-3">
+              <p className="text-xs font-bold text-teal-700 mb-2">🔬 التحاليل والأشعة والمرفقات</p>
+              {documents.length > 0 && (
+                <div className="space-y-1.5 mb-2">
+                  {documents.map((doc) => (
+                    <div key={doc.id} className="flex items-center justify-between bg-slate-50 rounded-lg p-2 text-xs">
+                      <button onClick={() => openDoc(doc)} className="text-sky-600 underline truncate">{doc.documentType === "تحليل" ? "🧪" : doc.documentType === "أشعة" ? "🩻" : "📄"} {doc.title}</button>
+                      {h.isOwner && <button onClick={() => deleteDoc(doc)} className="text-rose-400 hover:text-rose-600 shrink-0">✕</button>}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="flex gap-2 items-center">
+                <select className={inputCls} value={docType} onChange={(e) => setDocType(e.target.value)} style={{ maxWidth: 110 }}>
+                  <option>تحليل</option><option>أشعة</option><option>آخر</option>
+                </select>
+                <input type="file" accept="image/*,application/pdf" capture="environment" multiple disabled={uploading}
+                  onChange={(e) => handleFiles(e.target.files)} className="text-xs flex-1" />
+              </div>
+              {uploading && <p className="text-[11px] text-slate-400 mt-1">جارِ الرفع…</p>}
+              <p className="text-[10px] text-slate-400 mt-1">تقدر تصوّر مباشرة بالكاميرا أو ترفع ملف/صورة جاهزة.</p>
+            </div>
+          </>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
 /* ---------- النوافذ ---------- */
 function Modals({ modal, setModal, db, update, h, audit }) {
   /* نافذة السبب الإجباري لأي حذف/تعديل حسّاس */
   if (modal.type === "reason") return <ReasonModal modal={modal} setModal={setModal} audit={audit} />;
   if (modal.type === "stockMove") return <StockMoveModal modal={modal} setModal={setModal} audit={audit} db={db} />;
+  if (modal.type === "encounter") return <EncounterModal modal={modal} setModal={setModal} db={db} update={update} h={h} />;
   const [f, setF] = useState(modal.data && modal.data.edit ? { ...modal.data.edit } : {});
   const edit = modal.data && modal.data.edit;
   const close = () => setModal(null);
