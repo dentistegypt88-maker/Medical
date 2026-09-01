@@ -122,8 +122,8 @@ const COLS = {
   },
   branches: {
     table: "clinic_branches",
-    from: (r) => ({ id: r.id, name: r.name, address: es(r.address), phone: es(r.phone), isHeadOffice: !!r.is_head_office, active: r.active !== false }),
-    to: (o) => ({ id: o.id, clinic_id: CID, name: o.name, address: o.address || "", phone: o.phone || "", is_head_office: !!o.isHeadOffice, active: o.active !== false }),
+    from: (r) => ({ id: r.id, name: r.name, address: es(r.address), phone: es(r.phone), isHeadOffice: !!r.is_head_office, active: r.active !== false, latitude: r.latitude, longitude: r.longitude, radius: num(r.attendance_radius_m) || 75 }),
+    to: (o) => ({ id: o.id, clinic_id: CID, name: o.name, address: o.address || "", phone: o.phone || "", is_head_office: !!o.isHeadOffice, active: o.active !== false, latitude: o.latitude ?? null, longitude: o.longitude ?? null, attendance_radius_m: o.radius || 75 }),
   },
   branchAssignments: {
     table: "member_branch_assignments",
@@ -162,8 +162,22 @@ const COLS = {
   },
   attendance: {
     table: "attendance",
-    from: (r) => ({ id: r.id, empId: r.member_id, date: r.date, in: r.check_in, out: r.check_out }),
-    to: (o) => ({ id: o.id, clinic_id: CID, member_id: o.empId, date: o.date, check_in: o.in || null, check_out: o.out || null }),
+    from: (r) => ({
+      id: r.id, empId: r.member_id, date: r.date, in: r.check_in, out: r.check_out,
+      branchId: es(r.branch_id), inMethod: es(r.check_in_method), outMethod: es(r.check_out_method),
+      inDistance: r.check_in_distance_m, outDistance: r.check_out_distance_m,
+      manualOverride: !!r.manual_override, overrideReason: es(r.override_reason),
+      inLat: r.check_in_lat, inLng: r.check_in_lng, inAccuracy: r.check_in_accuracy_m,
+      outLat: r.check_out_lat, outLng: r.check_out_lng, outAccuracy: r.check_out_accuracy_m,
+    }),
+    to: (o) => ({
+      id: o.id, clinic_id: CID, member_id: o.empId, date: o.date, check_in: o.in || null, check_out: o.out || null,
+      branch_id: nn(o.branchId), check_in_method: o.inMethod || null, check_out_method: o.outMethod || null,
+      check_in_distance_m: o.inDistance ?? null, check_out_distance_m: o.outDistance ?? null,
+      manual_override: !!o.manualOverride, override_reason: o.overrideReason || null,
+      check_in_lat: o.inLat ?? null, check_in_lng: o.inLng ?? null, check_in_accuracy_m: o.inAccuracy ?? null,
+      check_out_lat: o.outLat ?? null, check_out_lng: o.outLng ?? null, check_out_accuracy_m: o.outAccuracy ?? null,
+    }),
   },
   payrollTx: {
     table: "payroll_tx",
@@ -521,6 +535,43 @@ const setPrimaryBranch = (d, memberId, branchId) => {
   d.branchAssignments = d.branchAssignments.filter((x) => x.memberId !== memberId);
   if (branchId) d.branchAssignments.push({ id: uid(), memberId, branchId, isPrimary: true });
 };
+
+/* المسافة بين نقطتين على الكرة الأرضية بالمتر (Haversine) */
+const distanceMeters = (lat1, lon1, lat2, lon2) => {
+  const R = 6371000;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+};
+const getCurrentLocation = () => new Promise((resolve, reject) => {
+  if (!navigator.geolocation) { reject(new Error("الجهاز ده مايدعمش تحديد الموقع")); return; }
+  navigator.geolocation.getCurrentPosition(
+    (pos) => resolve(pos.coords),
+    (err) => reject(new Error(err.code === 1 ? "لازم توافق على إذن الموقع من المتصفح" : "تعذر تحديد الموقع")),
+    { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+  );
+});
+/* يتحقق من موقع الموظف مقابل فرعه قبل تسجيل حضور/انصراف — بيرجع بيانات الموقع أو null لو المستخدم لغى العملية */
+async function verifyAttendanceLocation(branch) {
+  if (!branch || branch.latitude == null || branch.longitude == null) {
+    return { method: "manual", branchId: branch ? branch.id : "" };
+  }
+  try {
+    const coords = await getCurrentLocation();
+    const distance = distanceMeters(coords.latitude, coords.longitude, branch.latitude, branch.longitude);
+    if (distance <= (branch.radius || 75)) {
+      return { method: "gps", branchId: branch.id, lat: coords.latitude, lng: coords.longitude, accuracy: coords.accuracy, distance };
+    }
+    const reason = window.prompt(`أنت على بعد ${Math.round(distance)} متر من "${branch.name}" (المسموح ${branch.radius || 75} متر).\nاكتب سبب تسجيل الحضور من بره النطاق ده:`);
+    if (!reason || reason.trim().length < 3) return null;
+    return { method: "manual", branchId: branch.id, lat: coords.latitude, lng: coords.longitude, accuracy: coords.accuracy, distance, manualOverride: true, overrideReason: reason.trim() };
+  } catch (e) {
+    const reason = window.prompt(`تعذر تحديد موقعك (${e.message}).\nاكتب سبب تسجيل الحضور يدويًا:`);
+    if (!reason || reason.trim().length < 3) return null;
+    return { method: "manual", branchId: branch.id, manualOverride: true, overrideReason: reason.trim() };
+  }
+}
 
 /* حالات الأسنان وألوانها */
 const TOOTH_STATES = {
@@ -1451,7 +1502,9 @@ function Staff({ db, update, setModal }) {
                 <div className="flex-1">
                   <p className="font-semibold">{e.name} <span className="text-xs text-slate-500">· {e.role}</span>
                     {db.branches.length > 0 && <span className="text-[10px] bg-violet-50 text-violet-700 rounded-full px-2 py-0.5">🏢 {primaryBranchOf(db, e.id)?.name || "بدون فرع"}</span>}</p>
-                  {r ? <p className="text-xs mt-0.5"><span className="text-emerald-600">حضور {r.in}</span>{r.out && <span className="text-rose-600"> · انصراف {r.out}</span>}</p>
+                  {r ? <p className="text-xs mt-0.5"><span className="text-emerald-600">حضور {r.in}</span>{r.out && <span className="text-rose-600"> · انصراف {r.out}</span>}
+                      {r.inMethod === "gps" && <span className="text-[10px] bg-emerald-50 text-emerald-700 rounded-full px-1.5 py-0.5 mr-1">📍 موقع مؤكد</span>}
+                      {r.manualOverride && <span title={r.overrideReason} className="text-[10px] bg-amber-50 text-amber-700 rounded-full px-1.5 py-0.5 mr-1">✍️ يدوي</span>}</p>
                     : <p className="text-xs text-slate-400 mt-0.5">لم يسجل حضور اليوم</p>}
                 </div>
                 {!r ? <Btn size="sm" tone="emerald" onClick={() => checkIn(e)}>حضور</Btn>
@@ -1833,33 +1886,77 @@ function Watchtower({ db }) {
 function MyAttendance({ db, h, update }) {
   const t = todayStr();
   const e = h.myEmp;
+  const [busy, setBusy] = useState(false);
   if (!e) return null;
   const r = db.attendance.find((x) => x.empId === e.id && x.date === t);
   const log = db.attendance.filter((x) => x.empId === e.id).slice(-15).reverse();
+  const branch = primaryBranchOf(db, e.id);
+
+  const methodBadge = (method, distance) => method === "gps"
+    ? <span className="text-[10px] bg-emerald-50 text-emerald-700 rounded-full px-1.5 py-0.5">📍 موقع مؤكد{distance != null ? ` (${Math.round(distance)}م)` : ""}</span>
+    : method === "manual"
+      ? <span className="text-[10px] bg-amber-50 text-amber-700 rounded-full px-1.5 py-0.5">✍️ يدوي</span>
+      : null;
+
+  const doCheckIn = async () => {
+    setBusy(true);
+    try {
+      const loc = await verifyAttendanceLocation(branch);
+      if (!loc) return;
+      update((d) => {
+        d.attendance.push({
+          id: uid(), empId: e.id, date: t, in: nowTime(), out: null,
+          branchId: loc.branchId, inMethod: loc.method, inDistance: loc.distance,
+          inLat: loc.lat, inLng: loc.lng, inAccuracy: loc.accuracy,
+          manualOverride: !!loc.manualOverride, overrideReason: loc.overrideReason || "",
+        });
+        return d;
+      }, "تسجيل حضور " + e.name + (loc.manualOverride ? " (يدوي: " + loc.overrideReason + ")" : ""));
+    } finally { setBusy(false); }
+  };
+
+  const doCheckOut = async () => {
+    setBusy(true);
+    try {
+      const loc = await verifyAttendanceLocation(branch);
+      if (!loc) return;
+      update((d) => {
+        const x = d.attendance.find((y) => y.empId === e.id && y.date === t && !y.out);
+        if (x) {
+          x.out = nowTime(); x.outMethod = loc.method; x.outDistance = loc.distance;
+          x.outLat = loc.lat; x.outLng = loc.lng; x.outAccuracy = loc.accuracy;
+          if (loc.manualOverride) { x.manualOverride = true; x.overrideReason = (x.overrideReason ? x.overrideReason + " | " : "") + "انصراف: " + loc.overrideReason; }
+        }
+        return d;
+      }, "تسجيل انصراف " + e.name);
+    } finally { setBusy(false); }
+  };
+
   return (
     <React.Fragment>
       <Card className="p-4 text-center">
         <p className="font-bold text-teal-900 mb-1">{e.name} — {e.role}</p>
-        <p className="text-xs text-slate-500 mb-3">{t}</p>
+        <p className="text-xs text-slate-500 mb-3">{t}{branch && ` · 🏢 ${branch.name}`}</p>
         {!r ? (
-          <Btn tone="emerald" onClick={() => update((d) => { d.attendance.push({ id: uid(), empId: e.id, date: t, in: nowTime(), out: null }); return d; }, "تسجيل حضور " + e.name)}>✋ تسجيل حضوري الآن</Btn>
+          <Btn tone="emerald" disabled={busy} onClick={doCheckIn}>{busy ? "لحظة… جارِ تحديد الموقع" : "✋ تسجيل حضوري الآن"}</Btn>
         ) : !r.out ? (
           <React.Fragment>
-            <p className="text-sm text-emerald-600 mb-2">حضرت الساعة {r.in}</p>
-            <Btn tone="rose" onClick={() => update((d) => { const x = d.attendance.find((y) => y.empId === e.id && y.date === t && !y.out); if (x) x.out = nowTime(); return d; }, "تسجيل انصراف " + e.name)}>🏃 تسجيل انصرافي</Btn>
+            <p className="text-sm text-emerald-600 mb-2">حضرت الساعة {r.in} {methodBadge(r.inMethod, r.inDistance)}</p>
+            <Btn tone="rose" disabled={busy} onClick={doCheckOut}>{busy ? "لحظة… جارِ تحديد الموقع" : "🏃 تسجيل انصرافي"}</Btn>
           </React.Fragment>
         ) : (
           <p className="text-sm text-slate-500">✓ يومك اكتمل: حضور {r.in} — انصراف {r.out}</p>
         )}
+        {!branch && <p className="text-[11px] text-slate-400 mt-2">مفيش فرع محدد لحسابك — الحضور هيتسجل يدوي. اطلب من صاحب العيادة يحدد فرعك.</p>}
       </Card>
       <Card className="p-4">
         <h3 className="font-bold text-teal-900 mb-3">سجل حضوري</h3>
         {log.length === 0 ? <Empty text="لا توجد سجلات بعد" /> : (
           <div className="space-y-1.5 text-sm">
             {log.map((x) => (
-              <div key={x.id} className="flex justify-between border-b border-slate-100 pb-1.5">
+              <div key={x.id} className="flex justify-between items-center border-b border-slate-100 pb-1.5">
                 <span>{x.date}</span>
-                <span className="text-xs text-slate-500">{x.in}{x.out ? " ← " + x.out : " (لم تنصرف)"}</span>
+                <span className="text-xs text-slate-500 flex items-center gap-1">{x.in}{x.out ? " ← " + x.out : " (لم تنصرف)"} {methodBadge(x.inMethod, x.inDistance)}</span>
               </div>
             ))}
           </div>
@@ -2207,6 +2304,21 @@ function Modals({ modal, setModal, db, update, h, audit }) {
           <Field label="اسم الفرع"><input className={inputCls} placeholder="مثال: فرع المعادي" value={f.name || ""} onChange={set("name")} /></Field>
           <Field label="العنوان"><input className={inputCls} value={f.address || ""} onChange={set("address")} /></Field>
           <Field label="التليفون"><input dir="ltr" className={inputCls} value={f.phone || ""} onChange={set("phone")} /></Field>
+          <div className="bg-slate-50 rounded-xl p-3 space-y-2">
+            <p className="text-xs text-slate-600 font-semibold">📍 موقع الفرع (لتفعيل تسجيل حضور الموظفين بالموقع)</p>
+            <Btn size="sm" tone="ghost" onClick={async () => {
+              try {
+                const coords = await getCurrentLocation();
+                setF({ ...f, latitude: coords.latitude, longitude: coords.longitude });
+              } catch (e) { alert(e.message); }
+            }}>استخدم موقعي الحالي الآن</Btn>
+            {f.latitude != null && f.longitude != null ? (
+              <p className="text-[11px] text-emerald-700">✓ محفوظ: {f.latitude.toFixed(5)}, {f.longitude.toFixed(5)}</p>
+            ) : (
+              <p className="text-[11px] text-slate-400">لسه مفيش موقع محفوظ — الحضور هيتسجل يدوي لحد ما تحدده (لازم تكون واقف في الفرع وتضغط الزرار).</p>
+            )}
+            <Field label="نطاق السماح (متر)"><input type="number" className={inputCls} value={f.radius ?? 75} onChange={set("radius")} /></Field>
+          </div>
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={!!f.isHeadOffice} onChange={(e) => setF({ ...f, isHeadOffice: e.target.checked })} />
             <span>الفرع الرئيسي</span>
@@ -2223,8 +2335,9 @@ function Modals({ modal, setModal, db, update, h, audit }) {
               if (edit) {
                 const x = d.branches.find((y) => y.id === edit.id);
                 x.name = f.name.trim(); x.address = f.address || ""; x.phone = f.phone || ""; x.isHeadOffice = !!f.isHeadOffice; x.active = f.active !== false;
+                x.latitude = f.latitude ?? null; x.longitude = f.longitude ?? null; x.radius = Number(f.radius) || 75;
               } else {
-                d.branches.push({ id: uid(), name: f.name.trim(), address: f.address || "", phone: f.phone || "", isHeadOffice: !!f.isHeadOffice, active: true });
+                d.branches.push({ id: uid(), name: f.name.trim(), address: f.address || "", phone: f.phone || "", isHeadOffice: !!f.isHeadOffice, active: true, latitude: f.latitude ?? null, longitude: f.longitude ?? null, radius: Number(f.radius) || 75 });
               }
               return d;
             }, edit ? `تعديل فرع: ${f.name}` : `إضافة فرع: ${f.name}`);
