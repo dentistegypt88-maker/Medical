@@ -243,17 +243,32 @@ function subscribeRealtime() {
 
 /* ---------- شاشة الدخول / إنشاء الحساب ---------- */
 const loginInput = "w-full border border-slate-300 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-teal-600";
+const RECOVERY_REDIRECT = "https://dentistegypt88-maker.github.io/Medical/";
 function LoginSupa() {
-  const [mode, setMode] = useState("login");
+  const [mode, setMode] = useState("login"); // login | signup | forgot
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [pass, setPass] = useState("");
+  const [pass2, setPass2] = useState("");
   const [msg, setMsg] = useState(null); // {type:'err'|'ok', text}
   const [busy, setBusy] = useState(false);
 
   const go = async () => {
     setMsg(null);
+    if (mode === "forgot") {
+      if (!email.trim()) { setMsg({ type: "err", text: "اكتب الإيميل المسجل به حسابك" }); return; }
+      setBusy(true);
+      try {
+        const { error } = await sb.auth.resetPasswordForEmail(email.trim(), { redirectTo: RECOVERY_REDIRECT });
+        if (error) throw error;
+        setMsg({ type: "ok", text: "✅ لو الإيميل ده مسجل عندنا هيوصلك رابط لاسترجاع كلمة السر — افتحه من نفس الجهاز." });
+      } catch (e) {
+        setMsg({ type: "err", text: "خطأ: " + (e.message || e) });
+      } finally { setBusy(false); }
+      return;
+    }
     if (!email.trim() || pass.length < 6) { setMsg({ type: "err", text: "اكتب إيميل صحيح وكلمة سر 6 حروف على الأقل" }); return; }
+    if (mode === "signup" && pass !== pass2) { setMsg({ type: "err", text: "كلمة السر وتأكيدها مش متطابقين" }); return; }
     setBusy(true);
     try {
       if (mode === "signup") {
@@ -279,24 +294,84 @@ function LoginSupa() {
       <div className="bg-white rounded-3xl p-6 w-full max-w-sm shadow-xl">
         <h1 className="text-xl font-bold text-teal-900 text-center">🦷 نظام إدارة العيادات</h1>
         <p className="text-xs text-slate-500 text-center mt-1 mb-5">
-          {mode === "login" ? "سجّل دخولك بإيميلك وكلمة السر" : "أول حساب يتسجل يصبح صاحب العيادة تلقائياً 👑"}
+          {mode === "login" ? "سجّل دخولك بإيميلك وكلمة السر"
+            : mode === "signup" ? "أول حساب يتسجل يصبح صاحب العيادة تلقائياً 👑"
+            : "هنبعتلك رابط لاسترجاع كلمة السر على إيميلك"}
         </p>
         {mode === "signup" && (
           <input className={loginInput + " mb-2"} placeholder="اسمك" value={name} onChange={(e) => setName(e.target.value)} />
         )}
-        <input dir="ltr" type="email" className={loginInput + " mb-2"} placeholder="الإيميل" value={email} onChange={(e) => setEmail(e.target.value)} />
-        <input dir="ltr" type="password" className={loginInput} placeholder="كلمة السر (6+ حروف)" value={pass}
-          onChange={(e) => setPass(e.target.value)} onKeyDown={(e) => e.key === "Enter" && go()} />
+        <input dir="ltr" type="email" className={loginInput + " mb-2"} placeholder="الإيميل" value={email} onChange={(e) => setEmail(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && mode === "forgot" && go()} />
+        {mode !== "forgot" && (
+          <input dir="ltr" type="password" className={loginInput + (mode === "signup" ? " mb-2" : "")} placeholder="كلمة السر (6+ حروف)" value={pass}
+            onChange={(e) => setPass(e.target.value)} onKeyDown={(e) => e.key === "Enter" && mode === "login" && go()} />
+        )}
+        {mode === "signup" && (
+          <input dir="ltr" type="password" className={loginInput} placeholder="تأكيد كلمة السر" value={pass2}
+            onChange={(e) => setPass2(e.target.value)} onKeyDown={(e) => e.key === "Enter" && go()} />
+        )}
         {msg && <p className={"text-xs mt-2 text-center " + (msg.type === "err" ? "text-rose-600" : "text-emerald-600")}>{msg.text}</p>}
         <button disabled={busy} onClick={go}
           className="w-full mt-3 bg-teal-700 hover:bg-teal-800 text-white rounded-xl py-2.5 font-bold text-sm">
-          {busy ? "لحظة…" : mode === "login" ? "دخول" : "إنشاء الحساب"}
+          {busy ? "لحظة…" : mode === "login" ? "دخول" : mode === "signup" ? "إنشاء الحساب" : "إرسال رابط الاسترجاع"}
         </button>
-        <button onClick={() => { setMode(mode === "login" ? "signup" : "login"); setMsg(null); }}
-          className="w-full mt-2 text-teal-700 text-xs font-semibold">
-          {mode === "login" ? "أول مرة؟ إنشاء حساب جديد" : "عندك حساب؟ سجّل دخول"}
-        </button>
+        {mode === "login" && (
+          <button onClick={() => { setMode("forgot"); setMsg(null); }} className="w-full mt-2 text-slate-500 text-xs">
+            نسيت كلمة السر؟
+          </button>
+        )}
+        {mode === "forgot" ? (
+          <button onClick={() => { setMode("login"); setMsg(null); }} className="w-full mt-2 text-teal-700 text-xs font-semibold">
+            رجوع لتسجيل الدخول
+          </button>
+        ) : (
+          <button onClick={() => { setMode(mode === "login" ? "signup" : "login"); setMsg(null); }}
+            className="w-full mt-2 text-teal-700 text-xs font-semibold">
+            {mode === "login" ? "أول مرة؟ إنشاء حساب جديد" : "عندك حساب؟ سجّل دخول"}
+          </button>
+        )}
         <p className="text-[10px] text-slate-400 text-center mt-4">🔒 اتصال مشفر — البيانات محمية على مستوى قاعدة البيانات</p>
+      </div>
+    </div>
+  );
+}
+
+function SetNewPassword({ onDone }) {
+  const [pass, setPass] = useState("");
+  const [pass2, setPass2] = useState("");
+  const [msg, setMsg] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const save = async () => {
+    setMsg(null);
+    if (pass.length < 6) { setMsg({ type: "err", text: "كلمة السر لازم تكون 6 حروف على الأقل" }); return; }
+    if (pass !== pass2) { setMsg({ type: "err", text: "كلمة السر وتأكيدها مش متطابقين" }); return; }
+    setBusy(true);
+    try {
+      const { error } = await sb.auth.updateUser({ password: pass });
+      if (error) throw error;
+      setMsg({ type: "ok", text: "✅ اتغيّرت كلمة السر بنجاح" });
+      setTimeout(onDone, 1200);
+    } catch (e) {
+      setMsg({ type: "err", text: "خطأ: " + (e.message || e) });
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div dir="rtl" className="min-h-screen bg-teal-900 flex items-center justify-center p-4">
+      <div className="bg-white rounded-3xl p-6 w-full max-w-sm shadow-xl">
+        <h1 className="text-xl font-bold text-teal-900 text-center">🔑 كلمة سر جديدة</h1>
+        <p className="text-xs text-slate-500 text-center mt-1 mb-5">اكتب كلمة السر الجديدة اللي عايز تستخدمها</p>
+        <input dir="ltr" type="password" className={loginInput + " mb-2"} placeholder="كلمة السر الجديدة (6+ حروف)" value={pass}
+          onChange={(e) => setPass(e.target.value)} />
+        <input dir="ltr" type="password" className={loginInput} placeholder="تأكيد كلمة السر" value={pass2}
+          onChange={(e) => setPass2(e.target.value)} onKeyDown={(e) => e.key === "Enter" && save()} />
+        {msg && <p className={"text-xs mt-2 text-center " + (msg.type === "err" ? "text-rose-600" : "text-emerald-600")}>{msg.text}</p>}
+        <button disabled={busy} onClick={save}
+          className="w-full mt-3 bg-teal-700 hover:bg-teal-800 text-white rounded-xl py-2.5 font-bold text-sm">
+          {busy ? "لحظة…" : "حفظ كلمة السر"}
+        </button>
       </div>
     </div>
   );
@@ -307,10 +382,14 @@ function AuthGate() {
   const [session, setSession] = useState(undefined);
   const [boot, setBoot] = useState(null);
   const [err, setErr] = useState("");
+  const [recovery, setRecovery] = useState(false);
 
   useEffect(() => {
     sb.auth.getSession().then(({ data }) => setSession(data.session || null));
-    const { data: sub } = sb.auth.onAuthStateChange((_e, s) => setSession(s || null));
+    const { data: sub } = sb.auth.onAuthStateChange((e, s) => {
+      setSession(s || null);
+      if (e === "PASSWORD_RECOVERY") setRecovery(true);
+    });
     return () => sub.subscription.unsubscribe();
   }, []);
 
@@ -346,6 +425,7 @@ function AuthGate() {
     <div dir="rtl" className="min-h-screen bg-[#F2F7F6] flex items-center justify-center p-4">{child}</div>
   );
 
+  if (recovery) return <SetNewPassword onDone={() => { setRecovery(false); location.reload(); }} />;
   if (session === undefined) return center(<p className="text-teal-800 font-bold">جارِ التحقق…</p>);
   if (!session) return <LoginSupa />;
   if (err) return center(
