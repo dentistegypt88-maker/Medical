@@ -222,8 +222,8 @@ const COLS = {
 };
 
 /* ربط الصلاحيات البسيطة اللي بيستخدمها التطبيق بأكواد كتالوج الصلاحيات الرسمي */
-const PERM_KEY_TO_CODE = { appts: "appointments_view", collect: "payments_create", patients: "patients_view", inventory: "inventory_view", payroll: "payroll_tx_create" };
-const PERM_LABELS = { appts: "المواعيد والحجز", collect: "التحصيل", patients: "المرضى والشيتات", inventory: "المخزن", payroll: "مكافآت وخصومات الموظفين" };
+const PERM_KEY_TO_CODE = { appts: "appointments_view", collect: "payments_create", patients: "patients_view", inventory: "inventory_view", payroll: "payroll_tx_create", reports: "reports_view", contracts: "contracts_manage", lab: "lab_manage" };
+const PERM_LABELS = { appts: "المواعيد والحجز", collect: "التحصيل", patients: "المرضى والشيتات", inventory: "المخزن", payroll: "مكافآت وخصومات الموظفين", reports: "التقارير (عرض فقط)", contracts: "النقابات والتعاقدات", lab: "المعمل" };
 const defaultPermsForJobTitle = (jobTitlePerms, jobTitleId) => {
   const out = {};
   Object.entries(PERM_KEY_TO_CODE).forEach(([k, code]) => {
@@ -865,6 +865,9 @@ function ClinicApp({ boot }) {
     ...(h.can("patients") ? [["patients", "🧑‍🤝‍🧑", "المرضى"]] : []),
     ...(h.can("inventory") ? [["inv", "📦", "المخزن"]] : []),
     ...(h.can("payroll") ? [["payroll", "💰", "مكافآت وخصومات"]] : []),
+    ...(h.can("reports") ? [["reports", "📊", "التقارير"]] : []),
+    ...(h.can("contracts") ? [["contracts", "📜", "التعاقدات"]] : []),
+    ...(h.can("lab") ? [["lab", "🦷", "المعمل"]] : []),
     ["myattend", "🕐", "حضوري"],
   ];
   const tabs = h.isOwner ? ownerTabs : h.isStaff ? staffTabs : doctorTabs;
@@ -903,9 +906,9 @@ function ClinicApp({ boot }) {
             {tab === "appts" && <Appointments db={db} h={h} update={update} setModal={setModal} />}
             {tab === "patients" && <Patients db={db} h={h} setModal={setModal} openSheet={setPatientView} update={update} />}
             {tab === "finance" && h.isOwner && <Finance db={db} h={h} setModal={setModal} update={update} />}
-            {tab === "reports" && h.isOwner && <Reports db={db} h={h} update={update} />}
-            {tab === "contracts" && h.isOwner && <Contracts db={db} h={h} update={update} setModal={setModal} />}
-            {tab === "lab" && h.isOwner && <Lab db={db} h={h} update={update} setModal={setModal} />}
+            {tab === "reports" && (h.isOwner || h.can("reports")) && <Reports db={db} h={h} update={update} />}
+            {tab === "contracts" && (h.isOwner || h.can("contracts")) && <Contracts db={db} h={h} update={update} setModal={setModal} />}
+            {tab === "lab" && (h.isOwner || h.can("lab")) && <Lab db={db} h={h} update={update} setModal={setModal} />}
             {tab === "staff" && h.isOwner && <Staff db={db} update={update} setModal={setModal} />}
             {tab === "inv" && (h.isOwner || h.can("inventory")) && <Inventory db={db} update={update} setModal={setModal} audit={audit} h={h} />}
             {tab === "payroll" && !h.isOwner && h.can("payroll") && <PayrollActions db={db} update={update} setModal={setModal} h={h} />}
@@ -1408,6 +1411,7 @@ function Finance({ db, h, setModal, update }) {
 
 /* ---------- التقارير التحليلية ---------- */
 function Reports({ db, h, update }) {
+  const [repBranch, setRepBranch] = useState("");
   const monthKey = todayStr().slice(0, 7);
   const monthOverhead = db.overheadCosts.filter((c) => c.month === monthKey).reduce((s, c) => s + c.amount, 0);
   const overheadPerCase = monthlyOverheadPerCase(db, monthKey);
@@ -1419,14 +1423,18 @@ function Reports({ db, h, update }) {
   const weekExpenses = db.expenses.filter((e) => e.date >= weekAgo).reduce((s, e) => s + e.amount, 0);
   const weekNet = weekRevenue - weekExpenses;
 
+  const apptBranchOf = new Map(db.appointments.map((a) => [a.id, a.branchId]));
+  const branchPayments = db.payments.filter((p) => !repBranch || apptBranchOf.get(p.apptId) === repBranch);
+  const branchAppts = db.appointments.filter((a) => !repBranch || a.branchId === repBranch);
+
   const revByDoc = db.doctors.map((d) => ({
     label: d.name,
-    value: db.payments.filter((p) => p.doctorId === d.id).reduce((s, p) => s + p.amount, 0),
+    value: branchPayments.filter((p) => p.doctorId === d.id).reduce((s, p) => s + p.amount, 0),
   }));
   const maxDoc = Math.max(...revByDoc.map((x) => x.value), 1);
 
   const svcMap = {};
-  db.appointments.filter((a) => a.status !== "ملغي").forEach((a) => {
+  branchAppts.filter((a) => a.status !== "ملغي").forEach((a) => {
     svcMap[a.service] = (svcMap[a.service] || 0) + a.price;
   });
   const topSvcs = Object.entries(svcMap).map(([label, value]) => ({ label, value }))
@@ -1470,11 +1478,11 @@ function Reports({ db, h, update }) {
         </div>
         <div className="grid grid-cols-2 gap-3 mb-3">
           <Field label="عدد الحالات المتوقعة شهريًا">
-            <input type="number" className={inputCls} value={db.overheadSettings.expectedCases}
+            <input type="number" className={inputCls} value={db.overheadSettings.expectedCases} disabled={!h.isOwner}
               onChange={(e) => update((d) => { d.overheadSettings = { ...d.overheadSettings, expectedCases: Number(e.target.value) || 0 }; recomputeAutoPricedServices(d); return d; })} />
           </Field>
           <Field label="هامش الربح المستهدف (%)">
-            <input type="number" className={inputCls} value={db.overheadSettings.targetMarginPct}
+            <input type="number" className={inputCls} value={db.overheadSettings.targetMarginPct} disabled={!h.isOwner}
               onChange={(e) => update((d) => { d.overheadSettings = { ...d.overheadSettings, targetMarginPct: Number(e.target.value) || 0 }; recomputeAutoPricedServices(d); return d; })} />
           </Field>
         </div>
@@ -1513,13 +1521,24 @@ function Reports({ db, h, update }) {
         )}
       </Card>
 
+      {db.branches.length > 1 && (
+        <div className="flex gap-1.5 overflow-x-auto pb-1">
+          <button onClick={() => setRepBranch("")}
+            className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${repBranch === "" ? "bg-violet-700 text-white" : "bg-white text-slate-600 border border-slate-200"}`}>كل الفروع</button>
+          {db.branches.map((b) => (
+            <button key={b.id} onClick={() => setRepBranch(b.id)}
+              className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${repBranch === b.id ? "bg-violet-700 text-white" : "bg-white text-slate-600 border border-slate-200"}`}>🏢 {b.name}</button>
+          ))}
+        </div>
+      )}
+
       <Card className="p-4">
-        <h2 className="font-bold text-teal-900 mb-3">📊 دخل الأطباء (تحصيلات الحالات)</h2>
+        <h2 className="font-bold text-teal-900 mb-3">📊 دخل الأطباء (تحصيلات الحالات){repBranch && ` — ${db.branches.find((b) => b.id === repBranch)?.name}`}</h2>
         <div className="space-y-3">{revByDoc.map((x) => <Bar key={x.label} {...x} max={maxDoc} />)}</div>
       </Card>
 
       <Card className="p-4">
-        <h2 className="font-bold text-teal-900 mb-3">🏆 أعلى الخدمات قيمةً</h2>
+        <h2 className="font-bold text-teal-900 mb-3">🏆 أعلى الخدمات قيمةً{repBranch && ` — ${db.branches.find((b) => b.id === repBranch)?.name}`}</h2>
         {topSvcs.length === 0 ? <Empty text="لا توجد بيانات بعد" /> :
           <div className="space-y-3">{topSvcs.map((x) => <Bar key={x.label} {...x} max={maxSvc} />)}</div>}
       </Card>
@@ -1571,10 +1590,12 @@ function Contracts({ db, h, update, setModal }) {
                 <span className="bg-violet-50 text-violet-700 text-xs font-bold rounded-lg px-2 py-1">مستحق: {fmt(c.openTotal)}</span>
                 <div className="flex gap-1.5">
                   <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "contract", data: { edit: c } })}>تعديل</Btn>
-                  <Btn size="sm" tone="rose" onClick={() => {
-                    if (!window.confirm("إنهاء وحذف التعاقد مع " + c.name + "؟")) return;
-                    update((d) => { d.contracts = d.contracts.filter((x) => x.id !== c.id); return d; }, "حذف تعاقد: " + c.name);
-                  }}>حذف</Btn>
+                  {h.isOwner && (
+                    <Btn size="sm" tone="rose" onClick={() => {
+                      if (!window.confirm("إنهاء وحذف التعاقد مع " + c.name + "؟")) return;
+                      update((d) => { d.contracts = d.contracts.filter((x) => x.id !== c.id); return d; }, "حذف تعاقد: " + c.name);
+                    }}>حذف</Btn>
+                  )}
                 </div>
               </div>
             </div>
@@ -1594,7 +1615,8 @@ function Contracts({ db, h, update, setModal }) {
                 </div>
                 <div className="text-left">
                   <p className="font-bold text-violet-700 mb-1">{fmt(a.entityShare)}</p>
-                  <Btn size="sm" tone="violet" onClick={() => collectEntity(a)}>تم التحصيل</Btn>
+                  {(h.isOwner || h.can("collect")) ? <Btn size="sm" tone="violet" onClick={() => collectEntity(a)}>تم التحصيل</Btn>
+                    : <p className="text-[10px] text-slate-400">محتاج صلاحية "التحصيل" كمان</p>}
                 </div>
               </div>
             ))}
@@ -1640,11 +1662,13 @@ function Lab({ db, h, update, setModal }) {
               <button onClick={() => cycle(c)} className={`text-xs px-2 py-1 rounded-full font-semibold ${tone[c.status]}`}>{c.status} ⟳</button>
             </div>
             <div className="flex gap-2 mt-2">
-              {!c.paidToLab && <Btn size="sm" tone="rose" onClick={() => payLab(c)}>دفع للمعمل</Btn>}
-              <Btn size="sm" tone="ghost" onClick={() => {
-                if (!window.confirm("حذف حالة المعمل نهائياً؟")) return;
-                update((d) => { d.labCases = d.labCases.filter((x) => x.id !== c.id); return d; }, "حذف حالة معمل: " + c.work);
-              }}>حذف</Btn>
+              {!c.paidToLab && h.isOwner && <Btn size="sm" tone="rose" onClick={() => payLab(c)}>دفع للمعمل</Btn>}
+              {h.isOwner && (
+                <Btn size="sm" tone="ghost" onClick={() => {
+                  if (!window.confirm("حذف حالة المعمل نهائياً؟")) return;
+                  update((d) => { d.labCases = d.labCases.filter((x) => x.id !== c.id); return d; }, "حذف حالة معمل: " + c.work);
+                }}>حذف</Btn>
+              )}
             </div>
           </Card>
         ))}
