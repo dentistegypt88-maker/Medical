@@ -1,0 +1,2091 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>نظام إدارة العيادات</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦷</text></svg>" />
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;700&display=swap');
+  body { margin: 0; background: #F2F7F6; font-family: 'IBM Plex Sans Arabic', Tajawal, system-ui, sans-serif; }
+  #boot { text-align:center; padding-top:35vh; color:#115e59; font-weight:bold; }
+  #errbox { display:none; margin:16px; padding:16px; background:#fff1f2; border:2px solid #fda4af; border-radius:16px; color:#9f1239; font-size:13px; direction:rtl; white-space:pre-wrap; word-break:break-all; }
+</style>
+<script>
+  window.__errs = [];
+  function showErr(msg) {
+    window.__errs.push(msg);
+    var b = document.getElementById('errbox');
+    var boot = document.getElementById('boot');
+    if (boot) boot.style.display = 'none';
+    if (b) { b.style.display = 'block'; b.textContent = '⚠️ حصلت مشكلة — ابعت الرسالة دي لـ Claude:\n\n' + window.__errs.join('\n----\n'); }
+  }
+  window.addEventListener('error', function (e) {
+    if (e.target && (e.target.src || e.target.href)) {
+      showErr('فشل تحميل ملف خارجي: ' + (e.target.src || e.target.href));
+    } else {
+      showErr((e.message || 'خطأ غير معروف') + (e.filename ? '\n' + e.filename + ':' + e.lineno : ''));
+    }
+  }, true);
+  window.addEventListener('unhandledrejection', function (e) {
+    showErr('Promise: ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
+  });
+</script>
+<script src="https://cdn.tailwindcss.com"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.24.7/babel.min.js"></script>
+<script>
+  function loadScript(src) {
+    return new Promise(function (res, rej) {
+      var s = document.createElement('script');
+      s.src = src; s.onload = res; s.onerror = function () { rej(new Error('فشل: ' + src)); };
+      document.body.appendChild(s);
+    });
+  }
+  window.addEventListener('load', function () {
+    setTimeout(function () {
+      if (!document.getElementById('boot')) return;
+      (async function rescue() {
+        try {
+          if (!window.React) { try { await loadScript('https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.production.min.js'); } catch (e) { await loadScript('https://unpkg.com/react@18.2.0/umd/react.production.min.js'); } }
+          if (!window.ReactDOM) { try { await loadScript('https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.production.min.js'); } catch (e) { await loadScript('https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js'); } }
+          if (!window.supabase) { try { await loadScript('https://unpkg.com/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js'); } catch (e) {} }
+          if (!window.Babel) { try { await loadScript('https://unpkg.com/@babel/standalone@7.24.7/babel.min.js'); } catch (e) { await loadScript('https://cdn.jsdelivr.net/npm/@babel/standalone@7.24.7/babel.min.js'); } }
+          if (document.getElementById('boot')) Babel.transformScriptTags();
+        } catch (e) { showErr(String(e && e.message ? e.message : e)); }
+      })();
+    }, 2500);
+  });
+</script>
+</head>
+<body>
+<div id="errbox"></div>
+<div id="root"><div id="boot">🦷 جارِ تحميل نظام العيادة…<br /><span style="font-size:12px;font-weight:normal;color:#64748b">لو الرسالة فضلت ظاهرة أكتر من 15 ثانية تأكد من الإنترنت وحدّث الصفحة</span></div></div>
+<script type="text/babel" data-presets="env,react">
+const { useState, useEffect, useMemo } = React;
+
+/* ============================================================
+   الاتصال بقاعدة البيانات Supabase — مزامنة لحظية بين كل الأجهزة
+   ============================================================ */
+const SUPA_URL = "https://lwfmadhegsvjzsgcegho.supabase.co";
+const SUPA_KEY = "sb_publishable_xz_suL1YLw0uxDbRXZGITw_CuI0vRAf";
+const sb = window.supabase.createClient(SUPA_URL, SUPA_KEY);
+let CID = null;
+
+const nn = (v) => (v === "" || v === undefined ? null : v);
+const es = (v) => (v === null || v === undefined ? "" : v);
+const num = (v) => Number(v) || 0;
+
+/* خرائط التحويل: شكل التطبيق ⇄ جداول قاعدة البيانات */
+const COLS = {
+  doctors: {
+    table: "members", isRow: (r) => r.role === "doctor",
+    from: (r) => ({ id: r.id, name: r.name, specialty: es(r.specialty), commission: num(r.commission_pct), email: es(r.email) }),
+    to: (o) => ({ id: o.id, clinic_id: CID, role: "doctor", name: o.name, specialty: o.specialty || "", commission_pct: o.commission || 0, email: nn(o.email) }),
+  },
+  employees: {
+    table: "members", isRow: (r) => r.role === "staff",
+    from: (r) => ({ id: r.id, name: r.name, role: es(r.job_title), salary: num(r.base_salary), perms: r.perms || {}, email: es(r.email) }),
+    to: (o) => ({ id: o.id, clinic_id: CID, role: "staff", name: o.name, job_title: o.role || "", base_salary: o.salary || 0, perms: o.perms || {}, email: nn(o.email) }),
+  },
+  contracts: {
+    table: "contracts",
+    from: (r) => ({ id: r.id, name: r.name, discount: num(r.discount_pct), patientPct: r.patient_pct == null ? 100 : num(r.patient_pct), terms: es(r.terms), active: r.active !== false }),
+    to: (o) => ({ id: o.id, clinic_id: CID, name: o.name, discount_pct: o.discount || 0, patient_pct: o.patientPct == null ? 100 : o.patientPct, terms: o.terms || "", active: o.active !== false }),
+  },
+  patients: {
+    table: "patients",
+    from: (r) => ({ id: r.id, name: r.name, phone: es(r.phone), gender: es(r.gender), age: r.age || null, notes: es(r.medical_notes), contractId: es(r.contract_id), points: num(r.loyalty_points), teeth: r.teeth || {} }),
+    to: (o) => ({ id: o.id, clinic_id: CID, name: o.name, phone: o.phone || "", gender: o.gender || "", age: o.age || null, medical_notes: o.notes || "", contract_id: nn(o.contractId), loyalty_points: o.points || 0, teeth: o.teeth || {} }),
+  },
+  appointments: {
+    table: "appointments",
+    from: (r) => ({ id: r.id, patientId: r.patient_id, doctorId: es(r.doctor_id), date: r.date, time: r.time, service: es(r.service), price: num(r.price), contractId: es(r.contract_id), patientShare: num(r.patient_share), entityShare: num(r.entity_share), entityPaid: !!r.entity_paid, paid: num(r.paid), status: r.status }),
+    to: (o) => ({ id: o.id, clinic_id: CID, patient_id: o.patientId, doctor_id: nn(o.doctorId), date: o.date, time: o.time, service: o.service || "كشف", price: o.price || 0, contract_id: nn(o.contractId), patient_share: o.patientShare || 0, entity_share: o.entityShare || 0, entity_paid: !!o.entityPaid, paid: o.paid || 0, status: o.status }),
+  },
+  plans: {
+    table: "treatment_plans",
+    from: (r) => ({ id: r.id, patientId: r.patient_id, doctorId: es(r.doctor_id), specialty: es(r.specialty), procedure: r.procedure_name, price: num(r.price), status: r.status, notes: es(r.notes) }),
+    to: (o) => ({ id: o.id, clinic_id: CID, patient_id: o.patientId, doctor_id: nn(o.doctorId), specialty: o.specialty || "", procedure_name: o.procedure, price: o.price || 0, status: o.status, notes: o.notes || "" }),
+  },
+  records: {
+    table: "medical_records",
+    from: (r) => ({ id: r.id, patientId: r.patient_id, doctorId: es(r.doctor_id), date: r.date, type: r.type, title: r.title, details: es(r.details), link: es(r.link) }),
+    to: (o) => ({ id: o.id, clinic_id: CID, patient_id: o.patientId, doctor_id: nn(o.doctorId), date: o.date, type: o.type || "تحليل", title: o.title, details: o.details || "", link: o.link || "" }),
+  },
+  payments: {
+    table: "payments",
+    from: (r) => ({ id: r.id, patientId: es(r.patient_id), doctorId: es(r.doctor_id), apptId: es(r.appointment_id), amount: num(r.amount), source: es(r.source) || "مريض", note: es(r.note), date: r.date }),
+    to: (o) => ({ id: o.id, clinic_id: CID, patient_id: nn(o.patientId), doctor_id: nn(o.doctorId), appointment_id: nn(o.apptId), amount: o.amount, source: o.source || "مريض", note: o.note || "", date: o.date }),
+  },
+  expenses: {
+    table: "expenses",
+    from: (r) => ({ id: r.id, item: r.item, category: es(r.category) || "عام", amount: num(r.amount), date: r.date }),
+    to: (o) => ({ id: o.id, clinic_id: CID, item: o.item, category: o.category || "عام", amount: o.amount, date: o.date }),
+  },
+  inventory: {
+    table: "inventory_items",
+    from: (r) => ({ id: r.id, name: r.name, unit: es(r.unit) || "وحدة", qty: num(r.qty), min: num(r.min_qty) }),
+    to: (o) => ({ id: o.id, clinic_id: CID, name: o.name, unit: o.unit || "وحدة", qty: o.qty || 0, min_qty: o.min || 0 }),
+  },
+  labCases: {
+    table: "lab_cases",
+    from: (r) => ({ id: r.id, patientId: es(r.patient_id), doctorId: es(r.doctor_id), labName: es(r.lab_name), work: r.work, cost: num(r.cost), dateSent: r.date_sent, status: r.status, paidToLab: !!r.paid_to_lab }),
+    to: (o) => ({ id: o.id, clinic_id: CID, patient_id: nn(o.patientId), doctor_id: nn(o.doctorId), lab_name: o.labName || "", work: o.work, cost: o.cost || 0, date_sent: o.dateSent, status: o.status, paid_to_lab: !!o.paidToLab }),
+  },
+  attendance: {
+    table: "attendance",
+    from: (r) => ({ id: r.id, empId: r.member_id, date: r.date, in: r.check_in, out: r.check_out }),
+    to: (o) => ({ id: o.id, clinic_id: CID, member_id: o.empId, date: o.date, check_in: o.in || null, check_out: o.out || null }),
+  },
+  payrollTx: {
+    table: "payroll_tx",
+    from: (r) => ({ id: r.id, empId: r.member_id, type: r.type, amount: num(r.amount), note: es(r.note), settled: !!r.settled, date: r.date }),
+    to: (o) => ({ id: o.id, clinic_id: CID, member_id: o.empId, type: o.type, amount: o.amount, note: o.note || "", settled: !!o.settled, date: o.date }),
+  },
+};
+
+/* تحميل كل البيانات المسموح بها لهذا المستخدم (الحماية من قاعدة البيانات نفسها) */
+async function loadAll(member) {
+  CID = member.clinic_id;
+  const tables = ["members", "contracts", "patients", "appointments", "treatment_plans", "medical_records", "payments", "expenses", "inventory_items", "lab_cases", "attendance", "payroll_tx", "audit_logs", "clinics"];
+  const res = {};
+  for (const t of tables) {
+    const q = sb.from(t).select("*").limit(5000);
+    const { data, error } = t === "audit_logs" ? await q.order("at", { ascending: false }) : await q;
+    if (error) throw new Error(t + ": " + error.message);
+    res[t] = data || [];
+  }
+  const auditRows = res.audit_logs.map((r) => ({
+    id: r.id,
+    date: (r.at || "").slice(0, 10),
+    time: (r.at || "").slice(11, 16),
+    user: es(r.user_name), area: es(r.area), act: r.action, item: es(r.item),
+    before: es(r.before_val), after: es(r.after_val), reason: es(r.reason), sensitive: !!r.sensitive,
+    action: r.item ? r.action + " — " + r.item : r.action,
+  }));
+  return {
+    clinicName: (res.clinics[0] && res.clinics[0].name) || "عيادتي",
+    doctors: res.members.filter(COLS.doctors.isRow).map(COLS.doctors.from),
+    employees: res.members.filter(COLS.employees.isRow).map(COLS.employees.from),
+    contracts: res.contracts.map(COLS.contracts.from),
+    patients: res.patients.map(COLS.patients.from),
+    appointments: res.appointments.map(COLS.appointments.from),
+    plans: res.treatment_plans.map(COLS.plans.from),
+    records: res.medical_records.map(COLS.records.from),
+    payments: res.payments.map(COLS.payments.from),
+    expenses: res.expenses.map(COLS.expenses.from),
+    inventory: res.inventory_items.map(COLS.inventory.from),
+    labCases: res.lab_cases.map(COLS.labCases.from),
+    attendance: res.attendance.map(COLS.attendance.from),
+    payrollTx: res.payroll_tx.map(COLS.payrollTx.from),
+    logs: auditRows,
+    auditFlags: auditRows.filter((x) => x.sensitive),
+  };
+}
+
+/* محرك المزامنة: يقارن الحالة قبل/بعد ويرسل الفروق للقاعدة */
+let syncBusy = false, lastPush = 0, subCb = null, rtTimer = null, memberRef = null;
+
+async function pushDiff(prev, next) {
+  const ops = [];
+  for (const key of Object.keys(COLS)) {
+    const c = COLS[key];
+    const pm = new Map((prev[key] || []).map((o) => [o.id, o]));
+    const nm = new Map((next[key] || []).map((o) => [o.id, o]));
+    for (const [id, o] of nm) {
+      if (!pm.has(id)) ops.push(() => sb.from(c.table).insert(c.to(o)));
+      else if (JSON.stringify(pm.get(id)) !== JSON.stringify(o)) ops.push(() => sb.from(c.table).update(c.to(o)).eq("id", id));
+    }
+    for (const id of pm.keys()) if (!nm.has(id)) ops.push(() => sb.from(c.table).delete().eq("id", id));
+  }
+  const plm = new Set((prev.logs || []).map((x) => x.id));
+  for (const l of (next.logs || [])) {
+    if (plm.has(l.id)) continue;
+    const f = (next.auditFlags || []).find((a) => a.id === l.id);
+    ops.push(() => sb.from("audit_logs").insert({
+      id: l.id, clinic_id: CID, user_name: l.user,
+      area: f ? f.area : "", action: f ? f.act : l.action, item: f ? f.item : "",
+      before_val: f ? f.before : "", after_val: f ? f.after : "",
+      reason: f ? f.reason : "", sensitive: !!l.sensitive,
+    }));
+  }
+  if (next.clinicName !== prev.clinicName) ops.push(() => sb.from("clinics").update({ name: next.clinicName }).eq("id", CID));
+  if (!ops.length) return;
+  syncBusy = true;
+  try {
+    for (const op of ops) {
+      const r = await op();
+      if (r && r.error) {
+        console.error(r.error);
+        alert("⚠️ تعذر حفظ التعديل: " + (r.error.message || "") + "\nغالباً ليست لديك صلاحية لهذه العملية — والحماية هنا من قاعدة البيانات نفسها.");
+      }
+    }
+  } finally {
+    syncBusy = false;
+    lastPush = Date.now();
+  }
+}
+
+function subscribeRealtime() {
+  sb.channel("db-changes")
+    .on("postgres_changes", { event: "*", schema: "public" }, () => {
+      if (syncBusy || Date.now() - lastPush < 1500) return;
+      clearTimeout(rtTimer);
+      rtTimer = setTimeout(async () => {
+        try { const d = await loadAll(memberRef); if (subCb) subCb(d); } catch (e) { console.error(e); }
+      }, 800);
+    })
+    .subscribe();
+}
+
+/* ---------- شاشة الدخول / إنشاء الحساب ---------- */
+const loginInput = "w-full border border-slate-300 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-teal-600";
+function LoginSupa() {
+  const [mode, setMode] = useState("login");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [pass, setPass] = useState("");
+  const [msg, setMsg] = useState(null); // {type:'err'|'ok', text}
+  const [busy, setBusy] = useState(false);
+
+  const go = async () => {
+    setMsg(null);
+    if (!email.trim() || pass.length < 6) { setMsg({ type: "err", text: "اكتب إيميل صحيح وكلمة سر 6 حروف على الأقل" }); return; }
+    setBusy(true);
+    try {
+      if (mode === "signup") {
+        const { data, error } = await sb.auth.signUp({ email: email.trim(), password: pass, options: { data: { name: name.trim() || "مستخدم" } } });
+        if (error) throw error;
+        if (data.session) { location.reload(); return; }
+        setMsg({ type: "ok", text: "✅ تم إنشاء الحساب! افتح إيميلك واضغط رابط التأكيد، وبعدها ارجع هنا وسجّل دخول." });
+      } else {
+        const { error } = await sb.auth.signInWithPassword({ email: email.trim(), password: pass });
+        if (error) throw error;
+      }
+    } catch (e) {
+      const t = (e.message || "").includes("Invalid login") ? "الإيميل أو كلمة السر غير صحيحة"
+        : (e.message || "").includes("already registered") ? "الإيميل ده مسجل قبل كده — سجّل دخول"
+        : (e.message || "").includes("not confirmed") ? "الحساب لسه متأكدش — افتح رابط التأكيد في إيميلك"
+        : "خطأ: " + (e.message || e);
+      setMsg({ type: "err", text: t });
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div dir="rtl" className="min-h-screen bg-teal-900 flex items-center justify-center p-4">
+      <div className="bg-white rounded-3xl p-6 w-full max-w-sm shadow-xl">
+        <h1 className="text-xl font-bold text-teal-900 text-center">🦷 نظام إدارة العيادات</h1>
+        <p className="text-xs text-slate-500 text-center mt-1 mb-5">
+          {mode === "login" ? "سجّل دخولك بإيميلك وكلمة السر" : "أول حساب يتسجل يصبح صاحب العيادة تلقائياً 👑"}
+        </p>
+        {mode === "signup" && (
+          <input className={loginInput + " mb-2"} placeholder="اسمك" value={name} onChange={(e) => setName(e.target.value)} />
+        )}
+        <input dir="ltr" type="email" className={loginInput + " mb-2"} placeholder="الإيميل" value={email} onChange={(e) => setEmail(e.target.value)} />
+        <input dir="ltr" type="password" className={loginInput} placeholder="كلمة السر (6+ حروف)" value={pass}
+          onChange={(e) => setPass(e.target.value)} onKeyDown={(e) => e.key === "Enter" && go()} />
+        {msg && <p className={"text-xs mt-2 text-center " + (msg.type === "err" ? "text-rose-600" : "text-emerald-600")}>{msg.text}</p>}
+        <button disabled={busy} onClick={go}
+          className="w-full mt-3 bg-teal-700 hover:bg-teal-800 text-white rounded-xl py-2.5 font-bold text-sm">
+          {busy ? "لحظة…" : mode === "login" ? "دخول" : "إنشاء الحساب"}
+        </button>
+        <button onClick={() => { setMode(mode === "login" ? "signup" : "login"); setMsg(null); }}
+          className="w-full mt-2 text-teal-700 text-xs font-semibold">
+          {mode === "login" ? "أول مرة؟ إنشاء حساب جديد" : "عندك حساب؟ سجّل دخول"}
+        </button>
+        <p className="text-[10px] text-slate-400 text-center mt-4">🔒 اتصال مشفر — البيانات محمية على مستوى قاعدة البيانات</p>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- بوابة الدخول والتحميل ---------- */
+function AuthGate() {
+  const [session, setSession] = useState(undefined);
+  const [boot, setBoot] = useState(null);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    sb.auth.getSession().then(({ data }) => setSession(data.session || null));
+    const { data: sub } = sb.auth.onAuthStateChange((_e, s) => setSession(s || null));
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!session) { setBoot(null); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data: mem, error } = await sb.from("members").select("*").eq("auth_id", session.user.id).limit(1);
+        if (error) throw error;
+        if (!mem || !mem.length) {
+          setErr("حسابك غير مرتبط بأي عيادة بعد.\nاطلب من صاحب العيادة إضافتك (كطبيب أو موظف) بنفس الإيميل ده، وبعدها اعمل خروج ودخول تاني.");
+          return;
+        }
+        const m = mem[0];
+        memberRef = { clinic_id: m.clinic_id };
+        const db0 = await loadAll(m);
+        if (cancelled) return;
+        subscribeRealtime();
+        setBoot({
+          db0,
+          member: { id: m.id, role: m.role, name: m.name, clinic_id: m.clinic_id },
+          pushDiff,
+          subscribe: (cb) => { subCb = cb; return () => { subCb = null; }; },
+          signOut: () => sb.auth.signOut().then(() => location.reload()),
+        });
+      } catch (e) { setErr("تعذر تحميل البيانات: " + (e.message || e)); }
+    })();
+    return () => { cancelled = true; };
+  }, [session]);
+
+  const center = (child) => (
+    <div dir="rtl" className="min-h-screen bg-[#F2F7F6] flex items-center justify-center p-4">{child}</div>
+  );
+
+  if (session === undefined) return center(<p className="text-teal-800 font-bold">جارِ التحقق…</p>);
+  if (!session) return <LoginSupa />;
+  if (err) return center(
+    <div className="bg-white rounded-3xl p-6 max-w-sm text-center shadow-xl">
+      <p className="text-sm text-slate-700 whitespace-pre-wrap">{err}</p>
+      <button onClick={() => sb.auth.signOut().then(() => location.reload())}
+        className="mt-4 bg-teal-700 text-white rounded-xl px-5 py-2 text-sm font-bold">خروج</button>
+    </div>
+  );
+  if (!boot) return center(<p className="text-teal-800 font-bold">🦷 جارِ تحميل بيانات العيادة…</p>);
+  return <ClinicApp boot={boot} />;
+}
+
+function Root() { return <AuthGate />; }
+
+/* ============ نظام إدارة العيادات v3 — النسخة المنافسة ============
+   إضافات هذه النسخة:
+   🦷 مخطط أسنان تفاعلي (Dental Chart) لكل مريض
+   ⭐ نظام نقاط ولاء (كسب واستبدال عند الدفع)
+   📝 سجل تدقيق كامل (من فعل ماذا ومتى) — للمالك فقط
+   📊 تقارير تحليلية: دخل الأطباء، أعلى الخدمات، ديموغرافيا المرضى
+================================================================== */
+
+const todayStr = () => new Date().toLocaleDateString("en-CA");
+const nowTime = () => new Date().toLocaleTimeString("ar-EG", { hour: "2-digit", minute: "2-digit" });
+const uid = () => (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => { const r = Math.random() * 16 | 0; const v = c === 'x' ? r : (r & 0x3 | 0x8); return v.toString(16); });
+const fmt = (n) => Number(n || 0).toLocaleString("ar-EG") + " ج.م";
+
+/* نقاط الولاء: 5 نقاط لكل 100 ج.م مدفوعة · النقطة = 1 ج.م عند الاستبدال */
+const POINTS_PER_100 = 5;
+
+const waLink = (phone, msg) => {
+  let p = (phone || "").replace(/[^0-9]/g, "");
+  if (p.startsWith("01") && p.length === 11) p = "2" + p;
+  return `https://wa.me/${p}?text=${encodeURIComponent(msg)}`;
+};
+
+const contractSplit = (price, contract) => {
+  if (!contract) return { net: price, patientShare: price, entityShare: 0 };
+  const net = Math.round(price * (1 - (contract.discount || 0) / 100));
+  const patientShare = Math.round((net * (contract.patientPct ?? 100)) / 100);
+  return { net, patientShare, entityShare: net - patientShare };
+};
+
+/* حالات الأسنان وألوانها */
+const TOOTH_STATES = {
+  "سليم": "bg-white border-slate-300 text-slate-500",
+  "تسوس": "bg-amber-400 border-amber-500 text-white",
+  "حشو": "bg-sky-500 border-sky-600 text-white",
+  "عصب": "bg-violet-500 border-violet-600 text-white",
+  "تاج": "bg-yellow-300 border-yellow-400 text-yellow-900",
+  "خلع": "bg-slate-700 border-slate-800 text-white",
+  "زرع": "bg-emerald-500 border-emerald-600 text-white",
+};
+const UPPER = [18, 17, 16, 15, 14, 13, 12, 11, 21, 22, 23, 24, 25, 26, 27, 28];
+const LOWER = [48, 47, 46, 45, 44, 43, 42, 41, 31, 32, 33, 34, 35, 36, 37, 38];
+
+const seed = () => ({
+  clinicName: "عيادتي",
+  ownerPin: "1234",
+  doctors: [
+    { id: "d1", name: "د. أحمد سمير", specialty: "أسنان", commission: 40, pin: "1111" },
+    { id: "d2", name: "د. سارة محمود", specialty: "جلدية", commission: 35, pin: "2222" },
+  ],
+  patients: [
+    { id: "p1", name: "محمد علي", phone: "01012345678", notes: "", contractId: "c1", gender: "ذكر", age: 34, points: 25, teeth: { 36: { state: "تسوس", note: "" }, 11: { state: "حشو", note: "حشو تجميلي" } } },
+    { id: "p2", name: "منى حسن", phone: "01198765432", notes: "حساسية بنسلين", contractId: "", gender: "أنثى", age: 28, points: 40, teeth: {} },
+  ],
+  contracts: [
+    { id: "c1", name: "نقابة المهندسين", discount: 20, patientPct: 30, terms: "موافقة مسبقة للإجراءات فوق 2000 ج.م", active: true },
+  ],
+  appointments: [
+    { id: "a1", patientId: "p1", doctorId: "d1", date: todayStr(), time: "17:00", service: "حشو عصب", price: 1500, contractId: "c1", patientShare: 360, entityShare: 840, entityPaid: false, paid: 0, status: "محجوز" },
+    { id: "a2", patientId: "p2", doctorId: "d2", date: todayStr(), time: "18:30", service: "جلسة ليزر", price: 800, contractId: "", patientShare: 800, entityShare: 0, entityPaid: false, paid: 800, status: "محجوز" },
+  ],
+  plans: [
+    { id: "pl1", patientId: "p1", doctorId: "d1", specialty: "أسنان", procedure: "حشو عصب ضرس 36", price: 1500, status: "جاري", notes: "" },
+    { id: "pl2", patientId: "p1", doctorId: "d2", specialty: "جلدية", procedure: "علاج حساسية جلدية", price: 500, status: "مقترح", notes: "بعد انتهاء العصب" },
+  ],
+  payments: [{ id: "pay1", date: todayStr(), patientId: "p2", doctorId: "d2", apptId: "a2", amount: 800, note: "جلسة ليزر", source: "مريض" }],
+  expenses: [{ id: "e1", date: todayStr(), item: "كهرباء", amount: 350, category: "مرافق" }],
+  employees: [
+    { id: "emp1", name: "هدى إبراهيم", role: "سكرتيرة", salary: 5000, pin: "3333", perms: { appts: true, collect: true, patients: true, inventory: false } },
+    { id: "emp2", name: "كريم عادل", role: "تمريض", salary: 6000, pin: "4444", perms: { appts: false, collect: false, patients: true, inventory: true } },
+  ],
+  payrollTx: [{ id: "tx1", empId: "emp1", date: todayStr(), type: "سلفة", amount: 500, note: "", settled: false }],
+  attendance: [],
+  inventory: [
+    { id: "i1", name: "قفازات طبية", unit: "علبة", qty: 12, min: 5 },
+    { id: "i2", name: "بنج موضعي", unit: "أمبول", qty: 3, min: 10 },
+  ],
+  labCases: [
+    { id: "l1", patientId: "p1", doctorId: "d1", labName: "معمل الدقة", work: "طربوش زيركون", cost: 700, dateSent: todayStr(), status: "بالمعمل", paidToLab: false },
+  ],
+  records: [
+    { id: "r1", patientId: "p1", doctorId: "d1", date: todayStr(), type: "أشعة", title: "أشعة بانوراما", details: "التهاب حول جذر الضرس 36", link: "" },
+  ],
+  logs: [],
+  auditFlags: [],
+});
+
+/* ---------- عناصر واجهة ---------- */
+const Card = ({ children, className = "" }) => (
+  <div className={`bg-white rounded-2xl shadow-sm border border-teal-900/5 ${className}`}>{children}</div>
+);
+const Stat = ({ label, value, tone = "teal" }) => {
+  const tones = { teal: "text-teal-800 bg-teal-50", amber: "text-amber-700 bg-amber-50", rose: "text-rose-700 bg-rose-50", emerald: "text-emerald-700 bg-emerald-50", violet: "text-violet-700 bg-violet-50" };
+  return (
+    <Card className="p-4 flex flex-col gap-1">
+      <span className="text-xs text-slate-500">{label}</span>
+      <span className={`text-base font-bold rounded-lg px-2 py-1 w-fit ${tones[tone]}`}>{value}</span>
+    </Card>
+  );
+};
+const Btn = ({ children, onClick, tone = "teal", size = "md", className = "", ...rest }) => {
+  const tones = {
+    teal: "bg-teal-700 hover:bg-teal-800 text-white", ghost: "bg-slate-100 hover:bg-slate-200 text-slate-700",
+    amber: "bg-amber-500 hover:bg-amber-600 text-white", rose: "bg-rose-600 hover:bg-rose-700 text-white",
+    emerald: "bg-emerald-600 hover:bg-emerald-700 text-white", wa: "bg-[#25D366] hover:bg-[#1ebe5b] text-white",
+    violet: "bg-violet-600 hover:bg-violet-700 text-white",
+  };
+  const sizes = { md: "px-4 py-2 text-sm", sm: "px-2.5 py-1.5 text-xs" };
+  return <button onClick={onClick} {...rest} className={`rounded-xl font-semibold transition-colors ${tones[tone]} ${sizes[size]} ${className}`}>{children}</button>;
+};
+const Field = ({ label, children }) => (
+  <label className="flex flex-col gap-1 text-sm"><span className="text-slate-600 font-medium">{label}</span>{children}</label>
+);
+const inputCls = "border border-slate-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-600 bg-white";
+const Modal = ({ title, onClose, children }) => (
+  <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={onClose}>
+    <div className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-5 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="font-bold text-teal-900 text-lg">{title}</h3>
+        <button onClick={onClose} className="text-slate-400 hover:text-slate-700 text-xl leading-none">✕</button>
+      </div>
+      {children}
+    </div>
+  </div>
+);
+const Empty = ({ text }) => <div className="text-center text-slate-400 text-sm py-8">{text}</div>;
+const planTone = { "مقترح": "bg-slate-100 text-slate-600", "جاري": "bg-sky-100 text-sky-700", "تم": "bg-emerald-100 text-emerald-700" };
+
+/* شريط نسبة بسيط للتقارير */
+const Bar = ({ label, value, max, money = true }) => (
+  <div className="text-xs">
+    <div className="flex justify-between mb-0.5">
+      <span className="font-medium text-slate-700">{label}</span>
+      <span className="font-bold text-teal-800">{money ? fmt(value) : value}</span>
+    </div>
+    <div className="bg-slate-100 rounded-full h-2.5">
+      <div className="bg-teal-600 h-2.5 rounded-full" style={{ width: `${max ? Math.max(4, (value / max) * 100) : 0}%` }} />
+    </div>
+  </div>
+);
+
+/* ================= التطبيق ================= */
+function ClinicApp({ boot }) {
+  const [db, setDb] = useState(boot.db0);
+  const [tab, setTab] = useState("dash");
+  const [modal, setModal] = useState(null);
+  const [patientView, setPatientView] = useState(null);
+  const member = boot.member;
+  const user = member.role === "owner" ? { role: "owner" }
+    : member.role === "doctor" ? { role: "doctor", doctorId: member.id }
+    : { role: "staff", empId: member.id };
+  const userLabel = (member.role === "owner" ? "👑 " : "") + member.name;
+
+  useEffect(() => boot.subscribe(setDb), []);
+
+  const update = (fn, logAction) =>
+    setDb((prev) => {
+      const next = fn(JSON.parse(JSON.stringify(prev)));
+      if (logAction) {
+        next.logs.unshift({ id: uid(), date: todayStr(), time: nowTime(), user: userLabel, action: logAction, sensitive: false });
+        if (next.logs.length > 400) next.logs.length = 400;
+      }
+      boot.pushDiff(prev, next);
+      return next;
+    });
+
+  const audit = (fn, info) =>
+    setDb((prev) => {
+      const next = fn(JSON.parse(JSON.stringify(prev)));
+      const entry = { id: uid(), date: todayStr(), time: nowTime(), user: userLabel, area: info.area, act: info.act, item: info.item, before: String(info.before ?? ""), after: String(info.after ?? ""), reason: info.reason || "", sensitive: true };
+      next.auditFlags.unshift(entry);
+      next.logs.unshift({ id: entry.id, date: entry.date, time: entry.time, user: userLabel, action: info.act + " — " + info.item, sensitive: true });
+      boot.pushDiff(prev, next);
+      return next;
+    });
+
+  const h = useMemo(() => {
+    if (!db) return {};
+    return {
+      pName: (id) => db.patients.find((p) => p.id === id)?.name || "—",
+      pPhone: (id) => db.patients.find((p) => p.id === id)?.phone || "",
+      dName: (id) => db.doctors.find((d) => d.id === id)?.name || "—",
+      cName: (id) => db.contracts.find((c) => c.id === id)?.name || "",
+      isOwner: user?.role === "owner",
+      myDocId: user?.doctorId,
+      isStaff: user?.role === "staff",
+      myEmp: user?.role === "staff" ? db.employees.find((e) => e.id === user.empId) : null,
+      can: (p) => {
+        if (user?.role === "owner") return true;
+        if (user?.role === "staff") {
+          const emp = db.employees.find((e) => e.id === user.empId);
+          return !!(emp && emp.perms && emp.perms[p]);
+        }
+        return false;
+      },
+    };
+  }, [db, user]);
+
+  if (!db)
+    return <div className="min-h-screen flex items-center justify-center bg-[#F2F7F6] text-teal-800 font-bold" dir="rtl">جارِ التحميل…</div>;
+
+
+
+  const ownerTabs = [
+    ["dash", "🏠", "الرئيسية"], ["appts", "📅", "المواعيد"], ["patients", "🧑‍🤝‍🧑", "المرضى"],
+    ["finance", "💰", "الماليات"], ["reports", "📊", "التقارير"], ["contracts", "📜", "التعاقدات"],
+    ["lab", "🦷", "المعمل"], ["staff", "🕐", "الموظفون"], ["inv", "📦", "المخزن"],
+    ["watch", "🚨", "الرقابة"], ["logs", "📝", "سجل النشاط"], ["settings", "⚙️", "الحسابات"],
+  ];
+  const doctorTabs = [["dash", "🏠", "يومي"], ["appts", "📅", "مواعيدي"], ["patients", "🧑‍🤝‍🧑", "المرضى"], ["myacc", "💼", "حسابي"]];
+  const staffTabs = [
+    ["dash", "🏠", "يومي"],
+    ...(h.can("appts") ? [["appts", "📅", "المواعيد"]] : []),
+    ...(h.can("patients") ? [["patients", "🧑‍🤝‍🧑", "المرضى"]] : []),
+    ...(h.can("inventory") ? [["inv", "📦", "المخزن"]] : []),
+    ["myattend", "🕐", "حضوري"],
+  ];
+  const tabs = h.isOwner ? ownerTabs : h.isStaff ? staffTabs : doctorTabs;
+
+  return (
+    <div dir="rtl" className="min-h-screen bg-[#F2F7F6] text-slate-800"
+      style={{ fontFamily: "'IBM Plex Sans Arabic','Tajawal',system-ui,sans-serif" }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;700&display=swap');`}</style>
+
+      <header className="bg-teal-900 text-white px-4 pt-4 pb-3 sticky top-0 z-40">
+        <div className="flex items-center justify-between max-w-5xl mx-auto">
+          <div>
+            <h1 className="font-bold text-lg">{db.clinicName}</h1>
+            <p className="text-teal-200 text-xs mt-0.5">{h.isOwner ? "👑 الأكونت الرئيسي" : h.isStaff ? `👤 ${h.myEmp?.name || "موظف"} — ${h.myEmp?.role || ""}` : `🩺 ${h.dName(user.doctorId)}`}</p>
+          </div>
+          <button onClick={() => boot.signOut()}
+            className="bg-teal-800 hover:bg-teal-700 text-teal-100 text-xs px-3 py-1.5 rounded-full">خروج</button>
+        </div>
+        <nav className="flex gap-1 overflow-x-auto mt-3 -mx-4 px-4 max-w-5xl sm:mx-auto pb-1">
+          {tabs.map(([id, icon, label]) => (
+            <button key={id} onClick={() => { setTab(id); setPatientView(null); }}
+              className={`flex items-center gap-1.5 whitespace-nowrap px-3 py-1.5 rounded-full text-sm font-semibold transition-colors ${
+                tab === id && !patientView ? "bg-white text-teal-900" : "bg-teal-800/60 text-teal-100 hover:bg-teal-800"}`}>
+              <span>{icon}</span>{label}
+            </button>
+          ))}
+        </nav>
+      </header>
+
+      <main className="max-w-5xl mx-auto p-4 pb-24 space-y-4">
+        {patientView ? (
+          <PatientSheet db={db} h={h} pid={patientView} back={() => setPatientView(null)} setModal={setModal} update={update} audit={audit} />
+        ) : (
+          <>
+            {tab === "dash" && <Dashboard db={db} h={h} />}
+            {tab === "appts" && <Appointments db={db} h={h} update={update} setModal={setModal} />}
+            {tab === "patients" && <Patients db={db} h={h} setModal={setModal} openSheet={setPatientView} update={update} />}
+            {tab === "finance" && h.isOwner && <Finance db={db} h={h} setModal={setModal} update={update} />}
+            {tab === "reports" && h.isOwner && <Reports db={db} h={h} />}
+            {tab === "contracts" && h.isOwner && <Contracts db={db} h={h} update={update} setModal={setModal} />}
+            {tab === "lab" && h.isOwner && <Lab db={db} h={h} update={update} setModal={setModal} />}
+            {tab === "staff" && h.isOwner && <Staff db={db} update={update} setModal={setModal} />}
+            {tab === "inv" && (h.isOwner || h.can("inventory")) && <Inventory db={db} update={update} setModal={setModal} audit={audit} h={h} />}
+            {tab === "logs" && h.isOwner && <Logs db={db} />}
+            {tab === "watch" && h.isOwner && <Watchtower db={db} />}
+            {tab === "settings" && h.isOwner && <Settings db={db} update={update} setModal={setModal} />}
+            {tab === "myacc" && !h.isOwner && !h.isStaff && <MyAccount db={db} h={h} />}
+            {tab === "myattend" && h.isStaff && <MyAttendance db={db} h={h} update={update} />}
+          </>
+        )}
+      </main>
+
+      {modal && <Modals key={modal.type + ((modal.data && (modal.data.edit ? modal.data.edit.id : modal.data.id)) || "")} modal={modal} setModal={setModal} db={db} update={update} h={h} audit={audit} />}
+    </div>
+  );
+}
+
+/* ---------- الدخول ---------- */
+/* ---------- الرئيسية ---------- */
+function Dashboard({ db, h }) {
+  const t = todayStr();
+  const mine = (a) => h.isOwner || h.isStaff || a.doctorId === h.myDocId;
+  const todays = db.appointments.filter((a) => a.date === t && a.status !== "ملغي" && mine(a)).sort((a, b) => a.time.localeCompare(b.time));
+  const collectedToday = db.payments.filter((p) => p.date === t && (h.isOwner || h.isStaff || p.doctorId === h.myDocId)).reduce((s, p) => s + p.amount, 0);
+  const dues = db.appointments.filter((a) => a.status !== "ملغي" && mine(a)).reduce((s, a) => s + Math.max(0, (a.patientShare ?? a.price) - a.paid), 0);
+  const lowStock = db.inventory.filter((i) => i.qty <= i.min);
+  const entityDues = db.appointments.filter((a) => a.entityShare > 0 && !a.entityPaid && a.status !== "ملغي").reduce((s, a) => s + a.entityShare, 0);
+
+  const remind = (a) => {
+    const msg = `مرحباً ${h.pName(a.patientId)} 👋\nتذكير بموعدك في ${db.clinicName} اليوم الساعة ${a.time} مع ${h.dName(a.doctorId)}.\nنتشرف بحضورك 🌟`;
+    window.open(waLink(h.pPhone(a.patientId), msg), "_blank");
+  };
+
+  return (
+    <>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <Stat label={h.myDocId ? "مواعيدي اليوم" : "مواعيد اليوم"} value={todays.length} />
+        {(h.isOwner || h.myDocId || h.can("collect")) && <Stat label="تحصيلات اليوم" value={fmt(collectedToday)} tone="emerald" />}
+        {(h.isOwner || h.myDocId || h.can("collect")) && <Stat label="مستحقات المرضى" value={fmt(dues)} tone="amber" />}
+        {h.isOwner
+          ? <Stat label="مستحق على النقابات" value={fmt(entityDues)} tone="violet" />
+          : h.myDocId
+            ? <Stat label="خطط علاج جارية" value={db.plans.filter((p) => p.doctorId === h.myDocId && p.status !== "تم").length} tone="violet" />
+            : <Stat label="دوري" value={h.myEmp?.role || "موظف"} tone="violet" />}
+      </div>
+
+      <Card className="p-4">
+        <h2 className="font-bold text-teal-900 mb-3">📅 مواعيد اليوم</h2>
+        {todays.length === 0 ? <Empty text="لا توجد مواعيد اليوم ☕" /> : (
+          <div className="space-y-2">
+            {todays.map((a) => (
+              <div key={a.id} className="flex items-center gap-3 bg-teal-50/60 rounded-xl p-3">
+                <div className="bg-teal-700 text-white rounded-lg px-2 py-1 text-xs font-bold min-w-[52px] text-center">{a.time}</div>
+                <div className="flex-1 min-w-0">
+                  <p className="font-semibold text-sm truncate">{h.pName(a.patientId)}</p>
+                  <p className="text-xs text-slate-500 truncate">{a.service} · {h.dName(a.doctorId)}{a.contractId && ` · 📜 ${h.cName(a.contractId)}`}</p>
+                </div>
+                <Btn size="sm" tone="wa" onClick={() => remind(a)}>واتساب</Btn>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      {h.isOwner && lowStock.length > 0 && (
+        <Card className="p-4">
+          <h2 className="font-bold text-rose-700 mb-2">⚠️ نواقص المخزن</h2>
+          {lowStock.map((i) => <p key={i.id} className="text-sm text-rose-700">• {i.name}: متبقي {i.qty} {i.unit}</p>)}
+        </Card>
+      )}
+    </>
+  );
+}
+
+/* ---------- المواعيد ---------- */
+function Appointments({ db, h, update, setModal }) {
+  const [date, setDate] = useState(todayStr());
+  const [spec, setSpec] = useState("");
+  const specs = [...new Set(db.doctors.map((d) => d.specialty).filter(Boolean))];
+  const docSpec = (id) => db.doctors.find((d) => d.id === id)?.specialty || "";
+  const list = db.appointments
+    .filter((a) => a.date === date && (h.isOwner || h.isStaff || a.doctorId === h.myDocId))
+    .filter((a) => !spec || docSpec(a.doctorId) === spec)
+    .sort((a, b) => a.time.localeCompare(b.time));
+  const statusTone = { "محجوز": "bg-sky-100 text-sky-700", "تم": "bg-emerald-100 text-emerald-700", "ملغي": "bg-slate-200 text-slate-500" };
+
+  const remind = (a) => {
+    const msg = `مرحباً ${h.pName(a.patientId)} 👋\nتذكير بموعدك في ${db.clinicName} يوم ${a.date} الساعة ${a.time} مع ${h.dName(a.doctorId)}.\nنتشرف بحضورك 🌟`;
+    window.open(waLink(h.pPhone(a.patientId), msg), "_blank");
+  };
+  const setStatus = (a, status) =>
+    update((d) => { d.appointments.find((x) => x.id === a.id).status = status; return d; },
+      `${status === "تم" ? "إنهاء كشف" : "إلغاء موعد"} — ${h.pName(a.patientId)} (${a.service})`);
+
+  return (
+    <>
+      <div className="flex items-center gap-2">
+        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputCls + " flex-1"} />
+        <Btn onClick={() => setModal({ type: "appt", data: { date } })}>+ حجز جديد</Btn>
+      </div>
+      {(h.isOwner || h.isStaff) && specs.length > 1 && (
+        <div className="flex gap-1.5 overflow-x-auto pb-1">
+          <button onClick={() => setSpec("")}
+            className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${spec === "" ? "bg-teal-700 text-white" : "bg-white text-slate-600 border border-slate-200"}`}>كل التخصصات</button>
+          {specs.map((s) => (
+            <button key={s} onClick={() => setSpec(s)}
+              className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${spec === s ? "bg-teal-700 text-white" : "bg-white text-slate-600 border border-slate-200"}`}>{s}</button>
+          ))}
+        </div>
+      )}
+      {list.length === 0 ? <Card className="p-4"><Empty text="لا توجد مواعيد في هذا اليوم" /></Card> : (
+        <div className="space-y-3">
+          {list.map((a) => {
+            const share = a.patientShare ?? a.price;
+            const due = Math.max(0, share - a.paid);
+            return (
+              <Card key={a.id} className="p-4">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="font-bold">{a.time} — {h.pName(a.patientId)}</p>
+                    <p className="text-xs text-slate-500 mt-0.5">{a.service} · {h.dName(a.doctorId)}</p>
+                    {a.contractId && <p className="text-xs text-violet-600 mt-0.5">📜 {h.cName(a.contractId)} — على الجهة {fmt(a.entityShare)}</p>}
+                  </div>
+                  <span className={`text-xs px-2 py-1 rounded-full font-semibold ${statusTone[a.status]}`}>{a.status}</span>
+                </div>
+                <div className="flex flex-wrap gap-2 mt-3 text-xs">
+                  <span className="bg-slate-100 rounded-lg px-2 py-1">السعر: <b>{fmt(a.price)}</b></span>
+                  <span className="bg-teal-50 text-teal-700 rounded-lg px-2 py-1">على المريض: <b>{fmt(share)}</b></span>
+                  <span className="bg-emerald-50 text-emerald-700 rounded-lg px-2 py-1">مدفوع: <b>{fmt(a.paid)}</b></span>
+                  {due > 0 && <span className="bg-amber-50 text-amber-700 rounded-lg px-2 py-1">متبقي: <b>{fmt(due)}</b></span>}
+                </div>
+                <div className="flex flex-wrap gap-2 mt-3">
+                  <Btn size="sm" tone="wa" onClick={() => remind(a)}>تذكير واتساب</Btn>
+                  {due > 0 && a.status !== "ملغي" && (h.isOwner || h.myDocId || h.can("collect")) && <Btn size="sm" tone="amber" onClick={() => setModal({ type: "collect", data: a })}>تحصيل</Btn>}
+                  {a.status === "محجوز" && (
+                    <>
+                      <Btn size="sm" tone="emerald" onClick={() => setStatus(a, "تم")}>تم الكشف</Btn>
+                      <Btn size="sm" tone="ghost" onClick={() => setStatus(a, "ملغي")}>إلغاء</Btn>
+                    </>
+                  )}
+                  {h.isOwner && (
+                    <Btn size="sm" tone="rose" onClick={() => setModal({ type: "reason", data: {
+                      title: "حذف موعد " + h.pName(a.patientId), area: "المواعيد والأسعار", act: "حذف موعد/خدمة", item: h.pName(a.patientId) + " — " + a.service,
+                      before: fmt(a.price), after: "محذوف",
+                      apply: (d) => { d.appointments = d.appointments.filter((x) => x.id !== a.id); return d; },
+                    } })}>حذف</Btn>
+                  )}
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+    </>
+  );
+}
+
+/* ---------- المرضى ---------- */
+function Patients({ db, h, setModal, openSheet, update }) {
+  const [q, setQ] = useState("");
+  const [spec, setSpec] = useState("");
+  const specs = [...new Set(db.doctors.map((d) => d.specialty).filter(Boolean))];
+  const patientSpecs = (pid) => {
+    const s = new Set();
+    db.plans.filter((x) => x.patientId === pid).forEach((x) => { if (x.specialty) s.add(x.specialty); });
+    db.appointments.filter((x) => x.patientId === pid).forEach((x) => {
+      const d = db.doctors.find((y) => y.id === x.doctorId);
+      if (d && d.specialty) s.add(d.specialty);
+    });
+    return [...s];
+  };
+  const list = db.patients
+    .filter((p) => (p.name + p.phone).includes(q))
+    .filter((p) => !spec || patientSpecs(p.id).includes(spec));
+  return (
+    <>
+      <div className="flex gap-2">
+        <input placeholder="بحث بالاسم أو الرقم…" value={q} onChange={(e) => setQ(e.target.value)} className={inputCls + " flex-1"} />
+        <Btn onClick={() => setModal({ type: "patient" })}>+ مريض</Btn>
+      </div>
+      {specs.length > 1 && (
+        <div className="flex gap-1.5 overflow-x-auto pb-1">
+          <button onClick={() => setSpec("")}
+            className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${spec === "" ? "bg-teal-700 text-white" : "bg-white text-slate-600 border border-slate-200"}`}>كل التخصصات</button>
+          {specs.map((s) => (
+            <button key={s} onClick={() => setSpec(s)}
+              className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${spec === s ? "bg-teal-700 text-white" : "bg-white text-slate-600 border border-slate-200"}`}>{s}</button>
+          ))}
+        </div>
+      )}
+      <div className="space-y-2">
+        {list.map((p) => (
+          <Card key={p.id} className="p-4 flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full bg-teal-100 text-teal-800 font-bold flex items-center justify-center shrink-0">{p.name[0]}</div>
+            <div className="flex-1 min-w-0">
+              <p className="font-semibold truncate">{p.name} <span className="text-xs text-amber-600 font-bold">⭐ {p.points || 0}</span></p>
+              <p className="text-xs text-slate-500" dir="ltr">{p.phone}</p>
+              {p.contractId && <p className="text-xs text-violet-600">📜 {h.cName(p.contractId)}</p>}
+              {patientSpecs(p.id).length > 0 && <p className="text-[10px] text-slate-400 mt-0.5">🏷️ {patientSpecs(p.id).join(" · ")}</p>}
+            </div>
+            <div className="flex flex-col gap-1.5 items-stretch shrink-0">
+              <Btn size="sm" onClick={() => openSheet(p.id)}>فتح الشيت</Btn>
+              {h.isOwner && (
+                <div className="flex gap-1.5">
+                  <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "patient", data: { edit: p } })}>تعديل</Btn>
+                  <Btn size="sm" tone="rose" onClick={() => {
+                    if (!window.confirm("حذف " + p.name + "؟ سيُحذف شيته وخطة علاجه ومواعيده نهائياً.")) return;
+                    update((d) => {
+                      d.patients = d.patients.filter((x) => x.id !== p.id);
+                      d.plans = d.plans.filter((x) => x.patientId !== p.id);
+                      d.appointments = d.appointments.filter((x) => x.patientId !== p.id);
+                      d.labCases = d.labCases.filter((x) => x.patientId !== p.id);
+                      return d;
+                    }, "حذف المريض: " + p.name);
+                  }}>حذف</Btn>
+                </div>
+              )}
+            </div>
+          </Card>
+        ))}
+      </div>
+    </>
+  );
+}
+
+/* ---------- مخطط الأسنان ---------- */
+function DentalChart({ patient, setModal }) {
+  const teeth = patient.teeth || {};
+  const Tooth = ({ n }) => {
+    const st = teeth[n]?.state || "سليم";
+    return (
+      <button onClick={() => setModal({ type: "tooth", data: { pid: patient.id, tooth: n } })}
+        title={teeth[n]?.note || st}
+        className={`w-8 h-9 rounded-lg border-2 text-[10px] font-bold flex items-center justify-center shrink-0 transition-transform hover:scale-110 ${TOOTH_STATES[st]}`}>
+        {n}
+      </button>
+    );
+  };
+  return (
+    <div>
+      <div className="overflow-x-auto pb-1">
+        <div className="flex gap-1 justify-center min-w-max mb-1">{UPPER.map((n) => <Tooth key={n} n={n} />)}</div>
+        <div className="flex gap-1 justify-center min-w-max">{LOWER.map((n) => <Tooth key={n} n={n} />)}</div>
+      </div>
+      <div className="flex flex-wrap gap-1.5 mt-3 justify-center">
+        {Object.entries(TOOTH_STATES).map(([name, cls]) => (
+          <span key={name} className={`text-[10px] px-2 py-0.5 rounded-full border ${cls}`}>{name}</span>
+        ))}
+      </div>
+      <p className="text-[10px] text-slate-400 text-center mt-2">اضغط على أي سنّة لتسجيل حالتها (ترقيم FDI العالمي)</p>
+    </div>
+  );
+}
+
+/* ---------- شيت المريض ---------- */
+function PatientSheet({ db, h, pid, back, setModal, update, audit }) {
+  const p = db.patients.find((x) => x.id === pid);
+  if (!p) return null;
+  const plans = db.plans.filter((x) => x.patientId === pid);
+  const visits = db.appointments.filter((a) => a.patientId === pid).sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
+  const totalDue = visits.filter((a) => a.status !== "ملغي").reduce((s, a) => s + Math.max(0, (a.patientShare ?? a.price) - a.paid), 0);
+  const contract = db.contracts.find((c) => c.id === p.contractId);
+
+  const cyclePlan = (pl) =>
+    update((d) => {
+      const x = d.plans.find((y) => y.id === pl.id);
+      x.status = x.status === "مقترح" ? "جاري" : x.status === "جاري" ? "تم" : "مقترح";
+      return d;
+    }, `تحديث خطة علاج ${p.name}: ${pl.procedure}`);
+
+  return (
+    <>
+      <div className="flex items-center gap-2">
+        <Btn size="sm" tone="ghost" onClick={back}>→ رجوع</Btn>
+        <h2 className="font-bold text-teal-900 text-lg">📋 شيت المريض</h2>
+      </div>
+
+      <Card className="p-4">
+        <div className="flex items-center gap-3">
+          <div className="w-12 h-12 rounded-full bg-teal-700 text-white font-bold flex items-center justify-center text-lg">{p.name[0]}</div>
+          <div className="flex-1">
+            <p className="font-bold">{p.name} <span className="text-xs text-slate-400">· {p.gender || ""} {p.age ? `· ${p.age} سنة` : ""}</span></p>
+            <p className="text-xs text-slate-500" dir="ltr">{p.phone}</p>
+            {contract && <p className="text-xs text-violet-600 mt-0.5">📜 {contract.name}</p>}
+          </div>
+          <Btn size="sm" tone="wa" onClick={() => window.open(waLink(p.phone, `مرحباً ${p.name} 👋 من ${db.clinicName}`), "_blank")}>واتساب</Btn>
+        </div>
+        {p.notes && <p className="text-xs text-rose-600 mt-3 bg-rose-50 rounded-lg p-2">⚕️ {p.notes}</p>}
+        <div className="flex flex-wrap gap-2 mt-3 text-xs">
+          {h.isOwner && <span className="bg-amber-50 text-amber-700 rounded-lg px-2 py-1">مستحق عليه: <b>{fmt(totalDue)}</b></span>}
+          <span className="bg-yellow-50 text-yellow-700 rounded-lg px-2 py-1">⭐ رصيد النقاط: <b>{p.points || 0}</b> (تُستبدل خصماً عند الدفع)</span>
+        </div>
+      </Card>
+
+      <Card className="p-4">
+        <h3 className="font-bold text-teal-900 mb-3">🦷 مخطط الأسنان التفاعلي</h3>
+        <DentalChart patient={p} setModal={setModal} />
+      </Card>
+
+      <Card className="p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-bold text-teal-900">🗺️ خطة العلاج (كل التخصصات)</h3>
+          <Btn size="sm" onClick={() => setModal({ type: "plan", data: { patientId: pid } })}>+ إجراء</Btn>
+        </div>
+        {plans.length === 0 ? <Empty text="لا توجد خطة علاج بعد" /> : (
+          <div className="space-y-2">
+            {plans.map((pl) => (
+              <div key={pl.id} className="bg-slate-50 rounded-xl p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="font-semibold text-sm">{pl.procedure}</p>
+                    <p className="text-xs text-slate-500 mt-0.5">{pl.specialty} · {h.dName(pl.doctorId)} · {fmt(pl.price)}</p>
+                    {pl.notes && <p className="text-xs text-slate-400 mt-0.5">{pl.notes}</p>}
+                  </div>
+                  <div className="flex flex-col items-end gap-1 shrink-0">
+                    <button onClick={() => cyclePlan(pl)} className={`text-xs px-2 py-1 rounded-full font-semibold ${planTone[pl.status]}`}>{pl.status} ⟳</button>
+                    {h.isOwner && <button onClick={() => {
+                      if (!window.confirm("حذف هذا الإجراء من الخطة؟")) return;
+                      update((d) => { d.plans = d.plans.filter((x) => x.id !== pl.id); return d; }, "حذف إجراء من خطة " + p.name + ": " + pl.procedure);
+                    }} className="text-[10px] text-rose-500 hover:text-rose-700">حذف ✕</button>}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      <Card className="p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-bold text-teal-900">🔬 التحاليل والأشعة والروشتات</h3>
+          <Btn size="sm" onClick={() => setModal({ type: "record", data: { patientId: pid } })}>+ إضافة</Btn>
+        </div>
+        {(db.records || []).filter((r) => r.patientId === pid).length === 0 ? <Empty text="لا توجد سجلات طبية بعد" /> : (
+          <div className="space-y-2">
+            {(db.records || []).filter((r) => r.patientId === pid).sort((a, b) => b.date.localeCompare(a.date)).map((r) => {
+              const icon = r.type === "تحليل" ? "🧪" : r.type === "أشعة" ? "🩻" : r.type === "روشتة" ? "💊" : "📄";
+              return (
+                <div key={r.id} className="bg-slate-50 rounded-xl p-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="font-semibold text-sm">{icon} {r.title}</p>
+                      <p className="text-xs text-slate-500 mt-0.5">{r.type} · {r.date} · {h.dName(r.doctorId)}</p>
+                      {r.details && <p className="text-xs text-slate-600 mt-1 whitespace-pre-wrap">{r.details}</p>}
+                      {r.link && <a href={r.link} target="_blank" rel="noreferrer" className="text-xs text-sky-600 underline mt-1 inline-block">📎 فتح المرفق</a>}
+                    </div>
+                    <div className="flex flex-col gap-1 shrink-0">
+                      <button title="واتساب" onClick={() => window.open(waLink(p.phone, `${p.name} — ${r.type}: ${r.title}\n${r.details || ""}${r.link ? "\n" + r.link : ""}`), "_blank")} className="text-emerald-500 hover:text-emerald-700 text-sm">📤</button>
+                      {h.isOwner && <button title="حذف" onClick={() => {
+                        if (!window.confirm("حذف هذا السجل؟")) return;
+                        update((d) => { d.records = d.records.filter((x) => x.id !== r.id); return d; }, "حذف سجل طبي: " + r.title);
+                      }} className="text-rose-300 hover:text-rose-600 text-sm">🗑️</button>}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
+
+      <Card className="p-4">
+        <h3 className="font-bold text-teal-900 mb-3">🕓 سجل الزيارات والخدمات</h3>
+        {visits.length === 0 ? <Empty text="لا توجد زيارات بعد" /> : (
+          <div className="space-y-2">
+            {visits.map((a) => {
+              const sh = a.patientShare ?? a.price;
+              const rem = Math.max(0, sh - a.paid);
+              const dayRecords = (db.records || []).filter((r) => r.patientId === pid && r.date === a.date);
+              return (
+                <div key={a.id} className="border-b border-slate-100 pb-2.5">
+                  <div className="flex justify-between items-start gap-2 text-sm">
+                    <div className="min-w-0">
+                      <p className="font-semibold">{a.service}</p>
+                      <p className="text-xs text-slate-500">{a.date} {a.time} · {h.dName(a.doctorId)} · {a.status}</p>
+                    </div>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold shrink-0 ${a.status === "تم" ? "bg-emerald-100 text-emerald-700" : a.status === "ملغي" ? "bg-slate-200 text-slate-500" : "bg-sky-100 text-sky-700"}`}>{a.status}</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 mt-1.5 text-[11px]">
+                    <span className="bg-slate-100 rounded-lg px-2 py-0.5">السعر: {fmt(a.price)}</span>
+                    {a.contractId && <span className="bg-violet-50 text-violet-700 rounded-lg px-2 py-0.5">📜 {h.cName(a.contractId)}</span>}
+                    <span className="bg-teal-50 text-teal-700 rounded-lg px-2 py-0.5">على المريض: {fmt(sh)}</span>
+                    <span className="bg-emerald-50 text-emerald-700 rounded-lg px-2 py-0.5">مدفوع: {fmt(a.paid)}</span>
+                    {rem > 0 && <span className="bg-amber-50 text-amber-700 rounded-lg px-2 py-0.5">متبقي: {fmt(rem)}</span>}
+                  </div>
+                  {dayRecords.length > 0 && (
+                    <p className="text-[11px] text-slate-500 mt-1">🔬 سجلات هذه الزيارة: {dayRecords.map((r) => r.title).join(" · ")}</p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
+    </>
+  );
+}
+
+/* ---------- الماليات ---------- */
+function Finance({ db, h, setModal, update }) {
+  const [sub, setSub] = useState("summary");
+  const totalIn = db.payments.reduce((s, p) => s + p.amount, 0);
+  const totalOut = db.expenses.reduce((s, e) => s + e.amount, 0);
+  const docShares = db.doctors.map((d) => {
+    const collected = db.payments.filter((p) => p.doctorId === d.id).reduce((s, p) => s + p.amount, 0);
+    return { ...d, collected, share: Math.round((collected * d.commission) / 100) };
+  });
+  const totalShares = docShares.reduce((s, d) => s + d.share, 0);
+  const subs = [["summary", "الملخص"], ["in", "التحصيلات"], ["out", "المصروفات"], ["comm", "دخل الأطباء"]];
+
+  return (
+    <>
+      <div className="flex gap-1.5 overflow-x-auto pb-1">
+        {subs.map(([id, label]) => (
+          <button key={id} onClick={() => setSub(id)}
+            className={`px-3 py-1.5 rounded-full text-sm font-semibold whitespace-nowrap ${sub === id ? "bg-teal-700 text-white" : "bg-white text-slate-600 border border-slate-200"}`}>{label}</button>
+        ))}
+      </div>
+      {sub === "summary" && (
+        <div className="grid grid-cols-2 gap-3">
+          <Stat label="إجمالي التحصيلات" value={fmt(totalIn)} tone="emerald" />
+          <Stat label="إجمالي المصروفات" value={fmt(totalOut)} tone="rose" />
+          <Stat label="مستحقات الأطباء" value={fmt(totalShares)} tone="amber" />
+          <Stat label="صافي العيادة" value={fmt(totalIn - totalOut - totalShares)} tone="teal" />
+        </div>
+      )}
+      {sub === "in" && (
+        <Card className="p-4">
+          {db.payments.length === 0 ? <Empty text="لا توجد تحصيلات" /> : (
+            <div className="space-y-2">
+              {[...db.payments].reverse().map((p) => (
+                <div key={p.id} className="flex justify-between items-center border-b border-slate-100 pb-2 text-sm">
+                  <div>
+                    <p className="font-semibold">{p.source === "جهة" ? `📜 ${p.note}` : h.pName(p.patientId)}</p>
+                    <p className="text-xs text-slate-500">{p.date} · {h.dName(p.doctorId)}</p>
+                  </div>
+                  <span className="font-bold text-emerald-700">{fmt(p.amount)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      )}
+      {sub === "out" && (
+        <>
+          <Btn onClick={() => setModal({ type: "expense" })}>+ مصروف جديد</Btn>
+          <Card className="p-4">
+            {db.expenses.length === 0 ? <Empty text="لا توجد مصروفات" /> : (
+              <div className="space-y-2">
+                {[...db.expenses].reverse().map((e) => (
+                  <div key={e.id} className="flex justify-between items-center border-b border-slate-100 pb-2 text-sm">
+                    <div><p className="font-semibold">{e.item}</p><p className="text-xs text-slate-500">{e.date} · {e.category}</p></div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-rose-600">{fmt(e.amount)}</span>
+                      <button onClick={() => setModal({ type: "reason", data: {
+                        title: "حذف مصروف: " + e.item, area: "الماليات", act: "حذف مصروف", item: e.item,
+                        before: fmt(e.amount), after: "محذوف",
+                        apply: (d) => { d.expenses = d.expenses.filter((x) => x.id !== e.id); return d; },
+                      } })} className="text-rose-300 hover:text-rose-600 text-lg leading-none">✕</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+        </>
+      )}
+      {sub === "comm" && (
+        <Card className="p-4">
+          <h2 className="font-bold text-teal-900 mb-3">دخل ونِسَب الأطباء</h2>
+          <div className="space-y-3">
+            {docShares.map((d) => (
+              <div key={d.id} className="bg-teal-50/60 rounded-xl p-3">
+                <div className="flex justify-between items-center">
+                  <p className="font-semibold text-sm">{d.name} <span className="text-xs text-slate-500">({d.commission}%)</span></p>
+                  <span className="font-bold text-teal-800">{fmt(d.share)}</span>
+                </div>
+                <p className="text-xs text-slate-500 mt-1">تحصيلات حالاته: {fmt(d.collected)}</p>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+    </>
+  );
+}
+
+/* ---------- التقارير التحليلية ---------- */
+function Reports({ db, h }) {
+  const revByDoc = db.doctors.map((d) => ({
+    label: d.name,
+    value: db.payments.filter((p) => p.doctorId === d.id).reduce((s, p) => s + p.amount, 0),
+  }));
+  const maxDoc = Math.max(...revByDoc.map((x) => x.value), 1);
+
+  const svcMap = {};
+  db.appointments.filter((a) => a.status !== "ملغي").forEach((a) => {
+    svcMap[a.service] = (svcMap[a.service] || 0) + a.price;
+  });
+  const topSvcs = Object.entries(svcMap).map(([label, value]) => ({ label, value }))
+    .sort((a, b) => b.value - a.value).slice(0, 5);
+  const maxSvc = Math.max(...topSvcs.map((x) => x.value), 1);
+
+  const males = db.patients.filter((p) => p.gender === "ذكر").length;
+  const females = db.patients.filter((p) => p.gender === "أنثى").length;
+  const ages = db.patients.filter((p) => p.age).map((p) => p.age);
+  const avgAge = ages.length ? Math.round(ages.reduce((s, a) => s + a, 0) / ages.length) : 0;
+  const noShow = db.appointments.filter((a) => a.status === "ملغي").length;
+  const done = db.appointments.filter((a) => a.status === "تم").length;
+
+  return (
+    <>
+      <Card className="p-4">
+        <h2 className="font-bold text-teal-900 mb-3">📊 دخل الأطباء (تحصيلات الحالات)</h2>
+        <div className="space-y-3">{revByDoc.map((x) => <Bar key={x.label} {...x} max={maxDoc} />)}</div>
+      </Card>
+
+      <Card className="p-4">
+        <h2 className="font-bold text-teal-900 mb-3">🏆 أعلى الخدمات قيمةً</h2>
+        {topSvcs.length === 0 ? <Empty text="لا توجد بيانات بعد" /> :
+          <div className="space-y-3">{topSvcs.map((x) => <Bar key={x.label} {...x} max={maxSvc} />)}</div>}
+      </Card>
+
+      <Card className="p-4">
+        <h2 className="font-bold text-teal-900 mb-3">🧑‍🤝‍🧑 ديموغرافيا المرضى</h2>
+        <div className="grid grid-cols-2 gap-3">
+          <Stat label="ذكور / إناث" value={`${males} / ${females}`} />
+          <Stat label="متوسط العمر" value={avgAge ? `${avgAge} سنة` : "—"} tone="violet" />
+          <Stat label="كشوفات مكتملة" value={done} tone="emerald" />
+          <Stat label="مواعيد ملغاة" value={noShow} tone="rose" />
+        </div>
+      </Card>
+    </>
+  );
+}
+
+/* ---------- التعاقدات ---------- */
+function Contracts({ db, h, update, setModal }) {
+  const claims = db.appointments.filter((a) => a.entityShare > 0 && a.status !== "ملغي");
+  const byContract = db.contracts.map((c) => {
+    const open = claims.filter((a) => a.contractId === c.id && !a.entityPaid);
+    return { ...c, openTotal: open.reduce((s, a) => s + a.entityShare, 0) };
+  });
+  const collectEntity = (a) =>
+    update((d) => {
+      const appt = d.appointments.find((x) => x.id === a.id);
+      appt.entityPaid = true;
+      d.payments.push({ id: uid(), date: todayStr(), patientId: a.patientId, doctorId: a.doctorId, apptId: a.id, amount: a.entityShare, note: h.cName(a.contractId), source: "جهة" });
+      return d;
+    }, `تحصيل ${fmt(a.entityShare)} من ${h.cName(a.contractId)}`);
+
+  return (
+    <>
+      <div className="flex justify-between items-center">
+        <h2 className="font-bold text-teal-900">النقابات والجهات</h2>
+        <Btn size="sm" onClick={() => setModal({ type: "contract" })}>+ تعاقد جديد</Btn>
+      </div>
+      <div className="space-y-2">
+        {byContract.map((c) => (
+          <Card key={c.id} className="p-4">
+            <div className="flex justify-between items-start">
+              <div>
+                <p className="font-bold">📜 {c.name}</p>
+                <p className="text-xs text-slate-500 mt-0.5">خصم {c.discount}% · المريض يتحمل {c.patientPct}% والجهة {100 - c.patientPct}%</p>
+                {c.terms && <p className="text-xs text-slate-400 mt-0.5">شروط: {c.terms}</p>}
+              </div>
+              <div className="flex flex-col items-end gap-1.5 shrink-0">
+                <span className="bg-violet-50 text-violet-700 text-xs font-bold rounded-lg px-2 py-1">مستحق: {fmt(c.openTotal)}</span>
+                <div className="flex gap-1.5">
+                  <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "contract", data: { edit: c } })}>تعديل</Btn>
+                  <Btn size="sm" tone="rose" onClick={() => {
+                    if (!window.confirm("إنهاء وحذف التعاقد مع " + c.name + "؟")) return;
+                    update((d) => { d.contracts = d.contracts.filter((x) => x.id !== c.id); return d; }, "حذف تعاقد: " + c.name);
+                  }}>حذف</Btn>
+                </div>
+              </div>
+            </div>
+          </Card>
+        ))}
+        {db.contracts.length === 0 && <Card className="p-4"><Empty text="لا توجد تعاقدات" /></Card>}
+      </div>
+      <Card className="p-4">
+        <h3 className="font-bold text-teal-900 mb-3">💼 مطالبات مفتوحة</h3>
+        {claims.filter((a) => !a.entityPaid).length === 0 ? <Empty text="لا توجد مطالبات مفتوحة ✅" /> : (
+          <div className="space-y-2">
+            {claims.filter((a) => !a.entityPaid).map((a) => (
+              <div key={a.id} className="flex justify-between items-center bg-violet-50/60 rounded-xl p-3 text-sm">
+                <div>
+                  <p className="font-semibold">{h.pName(a.patientId)} — {a.service}</p>
+                  <p className="text-xs text-slate-500">{a.date} · {h.cName(a.contractId)}</p>
+                </div>
+                <div className="text-left">
+                  <p className="font-bold text-violet-700 mb-1">{fmt(a.entityShare)}</p>
+                  <Btn size="sm" tone="violet" onClick={() => collectEntity(a)}>تم التحصيل</Btn>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    </>
+  );
+}
+
+/* ---------- المعمل ---------- */
+function Lab({ db, h, update, setModal }) {
+  const cycle = (c) =>
+    update((d) => {
+      const x = d.labCases.find((y) => y.id === c.id);
+      x.status = x.status === "بالمعمل" ? "وصلت" : x.status === "وصلت" ? "تم التركيب" : "بالمعمل";
+      return d;
+    }, `تحديث حالة معمل: ${c.work} — ${h.pName(c.patientId)}`);
+  const payLab = (c) =>
+    update((d) => {
+      d.labCases.find((x) => x.id === c.id).paidToLab = true;
+      d.expenses.push({ id: uid(), date: todayStr(), item: `معمل: ${c.labName} — ${c.work}`, category: "معمل", amount: c.cost });
+      return d;
+    }, `دفع ${fmt(c.cost)} لمعمل ${c.labName}`);
+  const tone = { "بالمعمل": "bg-amber-100 text-amber-700", "وصلت": "bg-sky-100 text-sky-700", "تم التركيب": "bg-emerald-100 text-emerald-700" };
+
+  return (
+    <>
+      <div className="flex justify-between items-center">
+        <h2 className="font-bold text-teal-900">🦷 حالات المعمل</h2>
+        <Btn size="sm" onClick={() => setModal({ type: "lab" })}>+ حالة معمل</Btn>
+      </div>
+      <div className="space-y-2">
+        {db.labCases.length === 0 && <Card className="p-4"><Empty text="لا توجد حالات معمل" /></Card>}
+        {db.labCases.map((c) => (
+          <Card key={c.id} className="p-4">
+            <div className="flex justify-between items-start gap-2">
+              <div>
+                <p className="font-bold text-sm">{c.work} — {h.pName(c.patientId)}</p>
+                <p className="text-xs text-slate-500 mt-0.5">{c.labName} · {h.dName(c.doctorId)} · أُرسلت {c.dateSent}</p>
+                <p className="text-xs text-slate-500 mt-0.5">التكلفة: <b>{fmt(c.cost)}</b> {c.paidToLab ? "✓ مدفوعة" : ""}</p>
+              </div>
+              <button onClick={() => cycle(c)} className={`text-xs px-2 py-1 rounded-full font-semibold ${tone[c.status]}`}>{c.status} ⟳</button>
+            </div>
+            <div className="flex gap-2 mt-2">
+              {!c.paidToLab && <Btn size="sm" tone="rose" onClick={() => payLab(c)}>دفع للمعمل</Btn>}
+              <Btn size="sm" tone="ghost" onClick={() => {
+                if (!window.confirm("حذف حالة المعمل نهائياً؟")) return;
+                update((d) => { d.labCases = d.labCases.filter((x) => x.id !== c.id); return d; }, "حذف حالة معمل: " + c.work);
+              }}>حذف</Btn>
+            </div>
+          </Card>
+        ))}
+      </div>
+    </>
+  );
+}
+
+/* ---------- الموظفون ---------- */
+function Staff({ db, update, setModal }) {
+  const t = todayStr();
+  const recOf = (empId) => db.attendance.find((r) => r.empId === empId && r.date === t);
+  const checkIn = (e) => update((d) => { d.attendance.push({ id: uid(), empId: e.id, date: t, in: nowTime(), out: null }); return d; }, `تسجيل حضور ${e.name}`);
+  const checkOut = (e) => update((d) => { const r = d.attendance.find((x) => x.empId === e.id && x.date === t && !x.out); if (r) r.out = nowTime(); return d; }, `تسجيل انصراف ${e.name}`);
+  const txOf = (empId) => db.payrollTx.filter((x) => x.empId === empId && !x.settled);
+  const netOf = (e) => {
+    const tx = txOf(e.id);
+    const bonus = tx.filter((x) => x.type === "مكافأة").reduce((s, x) => s + x.amount, 0);
+    const cuts = tx.filter((x) => x.type !== "مكافأة").reduce((s, x) => s + x.amount, 0);
+    return { bonus, cuts, net: e.salary + bonus - cuts };
+  };
+  const paySalary = (e) => {
+    const { net } = netOf(e);
+    update((d) => {
+      d.payrollTx.forEach((x) => { if (x.empId === e.id) x.settled = true; });
+      d.expenses.push({ id: uid(), date: todayStr(), item: `راتب ${e.name}`, category: "رواتب", amount: net });
+      return d;
+    }, `صرف راتب ${e.name} — صافي ${fmt(net)}`);
+  };
+
+  return (
+    <>
+      <div className="flex justify-between items-center">
+        <h2 className="font-bold text-teal-900">الموظفون والمرتبات</h2>
+        <Btn size="sm" onClick={() => setModal({ type: "employee" })}>+ موظف</Btn>
+      </div>
+      <div className="space-y-3">
+        {db.employees.map((e) => {
+          const r = recOf(e.id);
+          const { bonus, cuts, net } = netOf(e);
+          const tx = txOf(e.id);
+          return (
+            <Card key={e.id} className="p-4">
+              <div className="flex items-center gap-3">
+                <div className="flex-1">
+                  <p className="font-semibold">{e.name} <span className="text-xs text-slate-500">· {e.role}</span></p>
+                  {r ? <p className="text-xs mt-0.5"><span className="text-emerald-600">حضور {r.in}</span>{r.out && <span className="text-rose-600"> · انصراف {r.out}</span>}</p>
+                    : <p className="text-xs text-slate-400 mt-0.5">لم يسجل حضور اليوم</p>}
+                </div>
+                {!r ? <Btn size="sm" tone="emerald" onClick={() => checkIn(e)}>حضور</Btn>
+                  : !r.out ? <Btn size="sm" tone="rose" onClick={() => checkOut(e)}>انصراف</Btn>
+                  : <span className="text-xs text-slate-400">✓</span>}
+              </div>
+              <div className="bg-slate-50 rounded-xl p-3 mt-3">
+                <div className="flex flex-wrap gap-2 text-xs">
+                  <span className="bg-white rounded-lg px-2 py-1 border border-slate-200">الأساسي: <b>{fmt(e.salary)}</b></span>
+                  {bonus > 0 && <span className="bg-emerald-50 text-emerald-700 rounded-lg px-2 py-1">مكافآت: +{fmt(bonus)}</span>}
+                  {cuts > 0 && <span className="bg-rose-50 text-rose-700 rounded-lg px-2 py-1">خصم/سلف: −{fmt(cuts)}</span>}
+                  <span className="bg-teal-700 text-white rounded-lg px-2 py-1">الصافي: <b>{fmt(net)}</b></span>
+                </div>
+                {tx.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    {tx.map((x) => (
+                      <p key={x.id} className="text-[11px] text-slate-500 flex items-center gap-1.5">
+                        <span>• {x.type} {fmt(x.amount)} — {x.date} {x.note && `(${x.note})`}</span>
+                        <button onClick={() => {
+                          if (!window.confirm("حذف هذه الحركة؟")) return;
+                          update((d) => { d.payrollTx = d.payrollTx.filter((y) => y.id !== x.id); return d; }, "حذف حركة " + x.type + " لـ" + e.name);
+                        }} className="text-rose-400 hover:text-rose-600">✕</button>
+                      </p>
+                    ))}
+                  </div>
+                )}
+                <div className="flex gap-2 mt-2">
+                  <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "payrollTx", data: e })}>+ مكافأة / خصم / سلفة</Btn>
+                  <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "employee", data: { edit: e } })}>تعديل</Btn>
+                  <Btn size="sm" tone="rose" onClick={() => {
+                    if (!window.confirm("حذف الموظف " + e.name + " وكل سجلات حضوره وحركات مرتبه؟")) return;
+                    update((d) => {
+                      d.employees = d.employees.filter((x) => x.id !== e.id);
+                      d.attendance = d.attendance.filter((x) => x.empId !== e.id);
+                      d.payrollTx = d.payrollTx.filter((x) => x.empId !== e.id);
+                      return d;
+                    }, "حذف الموظف: " + e.name);
+                  }}>حذف</Btn>
+                  <Btn size="sm" tone="amber" onClick={() => paySalary(e)}>صرف المرتب</Btn>
+                </div>
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+/* ---------- المخزن ---------- */
+function Inventory({ db, update, setModal, audit, h }) {
+  const adjust = (i, delta) => setModal({ type: "stockMove", data: { item: i, delta } });
+  return (
+    <>
+      <div className="flex justify-between items-center">
+        <h2 className="font-bold text-teal-900">الخامات والمستهلكات</h2>
+        <Btn size="sm" onClick={() => setModal({ type: "item" })}>+ صنف</Btn>
+      </div>
+      <div className="space-y-2">
+        {db.inventory.map((i) => {
+          const low = i.qty <= i.min;
+          return (
+            <Card key={i.id} className={`p-4 flex items-center gap-3 ${low ? "border-rose-200 bg-rose-50/50" : ""}`}>
+              <div className="flex-1">
+                <p className="font-semibold">{i.name} {low && <span className="text-xs text-rose-600 font-bold">⚠️</span>}</p>
+                <p className="text-xs text-slate-500">الحد الأدنى: {i.min} {i.unit}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Btn size="sm" tone="ghost" onClick={() => adjust(i, -1)}>− صرف</Btn>
+                <span className="font-bold text-teal-900 min-w-[60px] text-center text-sm">{i.qty} {i.unit}</span>
+                <Btn size="sm" tone="ghost" onClick={() => adjust(i, +1)}>+ إضافة</Btn>
+              </div>
+              <div className="flex flex-col gap-1 shrink-0">
+                <button title="تعديل" onClick={() => setModal({ type: "item", data: { edit: i } })} className="text-slate-400 hover:text-teal-700">✏️</button>
+                <button title="حذف" onClick={() => setModal({ type: "reason", data: {
+                  title: "حذف صنف: " + i.name, area: "المخزن", act: "حذف صنف", item: i.name,
+                  before: i.qty + " " + i.unit, after: "محذوف",
+                  apply: (d) => { d.inventory = d.inventory.filter((x) => x.id !== i.id); return d; },
+                } })} className="text-slate-400 hover:text-rose-600">🗑️</button>
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+/* ---------- سجل النشاط ---------- */
+function Logs({ db }) {
+  return (
+    <Card className="p-4">
+      <h2 className="font-bold text-teal-900 mb-1">📝 سجل النشاط (Audit Log)</h2>
+      <p className="text-xs text-slate-400 mb-3">كل حركة في النظام مسجلة: من فعلها ومتى — يراها المالك فقط.</p>
+      {db.logs.length === 0 ? <Empty text="لا توجد حركات مسجلة بعد" /> : (
+        <div className="space-y-1.5">
+          {db.logs.map((l) => (
+            <div key={l.id} className="flex items-start gap-2 border-b border-slate-100 pb-1.5 text-sm">
+              <span className="text-[10px] text-slate-400 whitespace-nowrap mt-0.5">{l.date}<br />{l.time}</span>
+              <div>
+                <p className="font-medium">{l.action}</p>
+                <p className="text-xs text-slate-500">{l.user}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+/* ---------- الحسابات ---------- */
+function Settings({ db, update, setModal }) {
+  return (
+    <>
+      <Card className="p-4">
+        <h2 className="font-bold text-teal-900 mb-2">🔐 الأكونت الرئيسي</h2>
+        <p className="text-xs bg-teal-50 text-teal-800 rounded-xl p-3 mb-2">🔐 الدخول الآن بإيميل وكلمة سر حقيقيين عبر قاعدة بيانات مشفرة. أضف الدكاترة والموظفين بإيميلاتهم، وكل واحد يسجل حسابه بنفس الإيميل فيرتبط تلقائياً بصلاحياته.</p>
+        <Field label="اسم العيادة">
+          <input className={inputCls + " mt-2"} value={db.clinicName} onChange={(e) => update((d) => { d.clinicName = e.target.value; return d; })} />
+        </Field>
+        <p className="text-xs text-slate-400 mt-2">⭐ نظام الولاء: يكسب المريض {POINTS_PER_100} نقاط لكل 100 ج.م مدفوعة، والنقطة = 1 ج.م خصم.</p>
+      </Card>
+      <div className="flex justify-between items-center">
+        <h2 className="font-bold text-teal-900">حسابات الأطباء</h2>
+        <Btn size="sm" onClick={() => setModal({ type: "doctor" })}>+ طبيب</Btn>
+      </div>
+      <div className="space-y-2">
+        {[...db.doctors].sort((a, b) => (a.specialty || "").localeCompare(b.specialty || "")).map((d) => (
+          <Card key={d.id} className="p-4 flex items-center gap-3">
+            <div className="flex-1">
+              <p className="font-semibold">{d.name} <span className="text-[10px] bg-teal-50 text-teal-700 rounded-full px-2 py-0.5">{d.specialty || "عام"}</span></p>
+              <p className="text-xs text-slate-500">نسبة {d.commission}% · {d.email || "⚠️ بدون إيميل"}</p>
+            </div>
+            <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "doctor", data: { edit: d } })}>تعديل</Btn>
+            <Btn size="sm" tone="rose" onClick={() => {
+              if (!window.confirm("حذف حساب " + d.name + "؟ سيُمنع من الدخول نهائياً.")) return;
+              update((x) => { x.doctors = x.doctors.filter((y) => y.id !== d.id); return x; }, "حذف حساب الطبيب: " + d.name);
+            }}>حذف</Btn>
+          </Card>
+        ))}
+      </div>
+    </>
+  );
+}
+
+/* ---------- حساب الطبيب ---------- */
+function MyAccount({ db, h }) {
+  const doc = db.doctors.find((d) => d.id === h.myDocId);
+  const myPays = db.payments.filter((p) => p.doctorId === h.myDocId);
+  const collected = myPays.reduce((s, p) => s + p.amount, 0);
+  const share = Math.round((collected * doc.commission) / 100);
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-3">
+        <Stat label="تحصيلات حالاتي" value={fmt(collected)} tone="emerald" />
+        <Stat label={`نصيبي (${doc.commission}%)`} value={fmt(share)} tone="amber" />
+      </div>
+      <Card className="p-4">
+        <h2 className="font-bold text-teal-900 mb-3">سجل تحصيلات حالاتي</h2>
+        <p className="text-xs text-slate-400 mb-3">🔒 هذا الحساب خاص بك فقط.</p>
+        {myPays.length === 0 ? <Empty text="لا توجد تحصيلات بعد" /> : (
+          <div className="space-y-2">
+            {[...myPays].reverse().map((p) => (
+              <div key={p.id} className="flex justify-between items-center border-b border-slate-100 pb-2 text-sm">
+                <div>
+                  <p className="font-semibold">{p.source === "جهة" ? `📜 ${p.note}` : h.pName(p.patientId)}</p>
+                  <p className="text-xs text-slate-500">{p.date}</p>
+                </div>
+                <span className="font-bold text-emerald-700">{fmt(p.amount)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    </>
+  );
+}
+
+/* ---------- نافذة السبب الإجباري ---------- */
+function ReasonModal({ modal, setModal, audit }) {
+  const [reason, setReason] = useState("");
+  const d = modal.data;
+  const close = () => setModal(null);
+  return (
+    <Modal title={d.title} onClose={close}>
+      <div className="space-y-3">
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800">
+          ⚠️ هذه العملية تُسجَّل في تقرير الرقابة لدى صاحب العيادة باسمك وتاريخها. كتابة السبب إجباري.
+        </div>
+        <Field label="سبب التعديل / الحذف (إجباري)">
+          <textarea rows="3" className={inputCls} placeholder="اكتب السبب بوضوح…" value={reason} onChange={(e) => setReason(e.target.value)} />
+        </Field>
+        <Btn className="w-full" tone="rose" onClick={() => {
+          if (reason.trim().length < 3) { alert("لازم تكتب سبباً واضحاً (3 حروف على الأقل)"); return; }
+          audit(d.apply, { area: d.area, act: d.act, item: d.item, before: d.before, after: d.after, reason: reason.trim() });
+          close();
+        }}>تأكيد وتسجيل السبب</Btn>
+        <Btn className="w-full" tone="ghost" onClick={close}>إلغاء</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+/* ---------- حركة مخزن بسبب ---------- */
+function StockMoveModal({ modal, setModal, audit }) {
+  const { item, delta } = modal.data;
+  const isOut = delta < 0;
+  const [qty, setQty] = useState(1);
+  const [reason, setReason] = useState("");
+  const close = () => setModal(null);
+  const n = Math.max(1, Number(qty) || 1);
+  const newQty = Math.max(0, item.qty + (isOut ? -n : n));
+  return (
+    <Modal title={(isOut ? "صرف من" : "إضافة إلى") + " " + item.name} onClose={close}>
+      <div className="space-y-3">
+        <p className="text-sm text-slate-600">الرصيد الحالي: <b>{item.qty} {item.unit}</b> ← بعد الحركة: <b className={isOut ? "text-rose-700" : "text-emerald-700"}>{newQty} {item.unit}</b></p>
+        <Field label={"الكمية (" + item.unit + ")"}>
+          <input type="number" min="1" className={inputCls} value={qty} onChange={(e) => setQty(e.target.value)} />
+        </Field>
+        <Field label={isOut ? "سبب الصرف (إجباري)" : "مصدر الإضافة (إجباري)"}>
+          <input className={inputCls} placeholder={isOut ? "استخدام في حالة، تلف، مرتجع…" : "شراء من مورد، مرتجع…"} value={reason} onChange={(e) => setReason(e.target.value)} />
+        </Field>
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-2.5 text-[11px] text-amber-800">
+          🚨 كل حركة مخزن تُسجَّل في تقرير الرقابة باسمك.
+        </div>
+        <Btn className="w-full" tone={isOut ? "rose" : "emerald"} onClick={() => {
+          if (reason.trim().length < 3) { alert("لازم تكتب السبب"); return; }
+          audit((d) => { const x = d.inventory.find((y) => y.id === item.id); x.qty = newQty; return d; },
+            { area: "المخزن", act: isOut ? "صرف كمية" : "إضافة كمية", item: item.name,
+              before: item.qty + " " + item.unit, after: newQty + " " + item.unit, reason: reason.trim() });
+          close();
+        }}>تأكيد</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+/* ---------- تقرير الرقابة (المالك فقط) ---------- */
+function Watchtower({ db }) {
+  const [area, setArea] = useState("");
+  const flags = (db.auditFlags || []).filter((x) => !area || x.area === area);
+  const areas = [...new Set((db.auditFlags || []).map((x) => x.area))];
+  const byUser = {};
+  (db.auditFlags || []).forEach((x) => { byUser[x.user] = (byUser[x.user] || 0) + 1; });
+  const tone = (a) => a.indexOf("حذف") === 0 ? "bg-rose-50 border-rose-200" : a.indexOf("تعديل") === 0 ? "bg-amber-50 border-amber-200" : "bg-slate-50 border-slate-200";
+  return (
+    <React.Fragment>
+      <Card className="p-4">
+        <h2 className="font-bold text-teal-900 mb-1">🚨 تقرير الرقابة</h2>
+        <p className="text-xs text-slate-500 mb-3">كل تعديل أو حذف في الأسعار أو المخزن أو الماليات — باسم منفّذه وسببه. يراه صاحب العيادة فقط.</p>
+        <div className="grid grid-cols-2 gap-2">
+          {Object.entries(byUser).map(([u, c]) => (
+            <div key={u} className="bg-slate-50 rounded-xl p-2.5 text-xs">
+              <p className="font-semibold truncate">{u}</p>
+              <p className="text-slate-500">{c} عملية</p>
+            </div>
+          ))}
+          {Object.keys(byUser).length === 0 && <p className="text-xs text-slate-400 col-span-2 text-center py-2">لا توجد عمليات مسجلة بعد</p>}
+        </div>
+      </Card>
+
+      {areas.length > 1 && (
+        <div className="flex gap-1.5 overflow-x-auto pb-1">
+          <button onClick={() => setArea("")} className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${area === "" ? "bg-teal-700 text-white" : "bg-white text-slate-600 border border-slate-200"}`}>الكل</button>
+          {areas.map((a) => (
+            <button key={a} onClick={() => setArea(a)} className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${area === a ? "bg-teal-700 text-white" : "bg-white text-slate-600 border border-slate-200"}`}>{a}</button>
+          ))}
+        </div>
+      )}
+
+      <Card className="p-4">
+        {flags.length === 0 ? <Empty text="لا توجد عمليات مسجلة" /> : (
+          <div className="space-y-2">
+            {flags.map((x) => (
+              <div key={x.id} className={`rounded-xl border p-3 ${tone(x.act)}`}>
+                <div className="flex justify-between items-start gap-2">
+                  <div className="min-w-0">
+                    <p className="font-bold text-sm">{x.act} — {x.item}</p>
+                    <p className="text-xs text-slate-600 mt-0.5">
+                      {x.before && <span>من <b>{x.before}</b> </span>}
+                      {x.after && <span>إلى <b>{x.after}</b></span>}
+                    </p>
+                    <p className="text-xs text-slate-700 mt-1 bg-white/70 rounded-lg px-2 py-1">📝 السبب: {x.reason || "—"}</p>
+                  </div>
+                  <div className="text-left shrink-0">
+                    <p className="text-[10px] text-slate-400">{x.date}</p>
+                    <p className="text-[10px] text-slate-400">{x.time}</p>
+                  </div>
+                </div>
+                <p className="text-[11px] font-semibold text-teal-800 mt-1.5">👤 {x.user} · {x.area}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    </React.Fragment>
+  );
+}
+
+/* ---------- حضوري (للموظف) ---------- */
+function MyAttendance({ db, h, update }) {
+  const t = todayStr();
+  const e = h.myEmp;
+  if (!e) return null;
+  const r = db.attendance.find((x) => x.empId === e.id && x.date === t);
+  const log = db.attendance.filter((x) => x.empId === e.id).slice(-15).reverse();
+  return (
+    <React.Fragment>
+      <Card className="p-4 text-center">
+        <p className="font-bold text-teal-900 mb-1">{e.name} — {e.role}</p>
+        <p className="text-xs text-slate-500 mb-3">{t}</p>
+        {!r ? (
+          <Btn tone="emerald" onClick={() => update((d) => { d.attendance.push({ id: uid(), empId: e.id, date: t, in: nowTime(), out: null }); return d; }, "تسجيل حضور " + e.name)}>✋ تسجيل حضوري الآن</Btn>
+        ) : !r.out ? (
+          <React.Fragment>
+            <p className="text-sm text-emerald-600 mb-2">حضرت الساعة {r.in}</p>
+            <Btn tone="rose" onClick={() => update((d) => { const x = d.attendance.find((y) => y.empId === e.id && y.date === t && !y.out); if (x) x.out = nowTime(); return d; }, "تسجيل انصراف " + e.name)}>🏃 تسجيل انصرافي</Btn>
+          </React.Fragment>
+        ) : (
+          <p className="text-sm text-slate-500">✓ يومك اكتمل: حضور {r.in} — انصراف {r.out}</p>
+        )}
+      </Card>
+      <Card className="p-4">
+        <h3 className="font-bold text-teal-900 mb-3">سجل حضوري</h3>
+        {log.length === 0 ? <Empty text="لا توجد سجلات بعد" /> : (
+          <div className="space-y-1.5 text-sm">
+            {log.map((x) => (
+              <div key={x.id} className="flex justify-between border-b border-slate-100 pb-1.5">
+                <span>{x.date}</span>
+                <span className="text-xs text-slate-500">{x.in}{x.out ? " ← " + x.out : " (لم تنصرف)"}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    </React.Fragment>
+  );
+}
+
+/* ---------- النوافذ ---------- */
+function Modals({ modal, setModal, db, update, h, audit }) {
+  /* نافذة السبب الإجباري لأي حذف/تعديل حسّاس */
+  if (modal.type === "reason") return <ReasonModal modal={modal} setModal={setModal} audit={audit} />;
+  if (modal.type === "stockMove") return <StockMoveModal modal={modal} setModal={setModal} audit={audit} />;
+  const [f, setF] = useState(modal.data && modal.data.edit ? { ...modal.data.edit } : {});
+  const edit = modal.data && modal.data.edit;
+  const close = () => setModal(null);
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+
+  if (modal.type === "tooth") {
+    const { pid, tooth } = modal.data;
+    const p = db.patients.find((x) => x.id === pid);
+    const cur = p.teeth?.[tooth] || { state: "سليم", note: "" };
+    return (
+      <Modal title={`🦷 السنّة رقم ${tooth} — ${p.name}`} onClose={close}>
+        <div className="space-y-3">
+          <Field label="الحالة">
+            <div className="grid grid-cols-4 gap-1.5">
+              {Object.entries(TOOTH_STATES).map(([name, cls]) => (
+                <button key={name} onClick={() => setF({ ...f, state: name })}
+                  className={`text-xs py-2 rounded-lg border-2 font-semibold ${cls} ${(f.state || cur.state) === name ? "ring-2 ring-teal-600" : ""}`}>
+                  {name}
+                </button>
+              ))}
+            </div>
+          </Field>
+          <Field label="ملاحظة"><input className={inputCls} value={f.note ?? cur.note} onChange={set("note")} /></Field>
+          <Btn className="w-full" onClick={() => {
+            const state = f.state || cur.state;
+            update((d) => {
+              const pt = d.patients.find((x) => x.id === pid);
+              if (!pt.teeth) pt.teeth = {};
+              pt.teeth[tooth] = { state, note: f.note ?? cur.note ?? "" };
+              return d;
+            }, `تحديث السنّة ${tooth} لـ${p.name} → ${state}`);
+            close();
+          }}>حفظ</Btn>
+        </div>
+      </Modal>
+    );
+  }
+
+  if (modal.type === "appt") {
+    const patient = db.patients.find((p) => p.id === f.patientId);
+    const autoContract = f.contractId !== undefined ? f.contractId : (patient?.contractId || "");
+    const contract = db.contracts.find((c) => c.id === autoContract);
+    const split = contractSplit(Number(f.price || 0), contract);
+    return (
+      <Modal title="حجز موعد جديد" onClose={close}>
+        <div className="space-y-3">
+          <Field label="المريض">
+            <select className={inputCls} value={f.patientId || ""} onChange={set("patientId")}>
+              <option value="">— اختر —</option>
+              {db.patients.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </Field>
+          <Field label="الطبيب">
+            <select className={inputCls} value={f.doctorId || (h.isOwner ? "" : h.myDocId)} onChange={set("doctorId")} disabled={!h.isOwner}>
+              <option value="">— اختر —</option>
+              {db.doctors.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="التاريخ"><input type="date" className={inputCls} value={f.date || modal.data.date} onChange={set("date")} /></Field>
+            <Field label="الوقت"><input type="time" className={inputCls} value={f.time || ""} onChange={set("time")} /></Field>
+          </div>
+          <Field label="الخدمة"><input className={inputCls} placeholder="كشف، حشو، جلسة…" value={f.service || ""} onChange={set("service")} /></Field>
+          <Field label="السعر (ج.م)"><input type="number" className={inputCls} value={f.price || ""} onChange={set("price")} /></Field>
+          <Field label="تعاقد / نقابة (اختياري)">
+            <select className={inputCls} value={autoContract} onChange={set("contractId")}>
+              <option value="">بدون — خاص</option>
+              {db.contracts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </Field>
+          {contract && Number(f.price) > 0 && (
+            <div className="bg-violet-50 rounded-xl p-3 text-xs text-violet-800 space-y-1">
+              <p>الصافي بعد خصم {contract.discount}%: <b>{fmt(split.net)}</b></p>
+              <p>يدفع المريض: <b>{fmt(split.patientShare)}</b> · على الجهة: <b>{fmt(split.entityShare)}</b></p>
+            </div>
+          )}
+          <Btn className="w-full" onClick={() => {
+            const doctorId = f.doctorId || (h.isOwner ? "" : h.myDocId);
+            if (!f.patientId || !doctorId || !f.time) return;
+            update((d) => {
+              d.appointments.push({
+                id: uid(), patientId: f.patientId, doctorId, date: f.date || modal.data.date, time: f.time,
+                service: f.service || "كشف", price: Number(f.price || 0), contractId: autoContract || "",
+                patientShare: split.patientShare, entityShare: split.entityShare, entityPaid: false, paid: 0, status: "محجوز",
+              });
+              return d;
+            }, `حجز موعد لـ${h.pName(f.patientId)} — ${f.service || "كشف"}`);
+            close();
+          }}>حفظ الحجز</Btn>
+        </div>
+      </Modal>
+    );
+  }
+
+  if (modal.type === "collect") {
+    const a = modal.data;
+    const p = db.patients.find((x) => x.id === a.patientId);
+    const share = a.patientShare ?? a.price;
+    const due = Math.max(0, share - a.paid);
+    const usePts = f.usePts === "1";
+    const redeem = usePts ? Math.min(p.points || 0, due) : 0;
+    const cashDue = due - redeem;
+    return (
+      <Modal title={`تحصيل من ${p.name}`} onClose={close}>
+        <div className="space-y-3">
+          <p className="text-sm text-slate-600">المتبقي: <b className="text-amber-700">{fmt(due)}</b></p>
+          {(p.points || 0) > 0 && (
+            <label className="flex items-center gap-2 bg-yellow-50 rounded-xl p-3 text-sm cursor-pointer">
+              <input type="checkbox" checked={usePts} onChange={(e) => setF({ ...f, usePts: e.target.checked ? "1" : "0", amount: undefined })} />
+              <span>⭐ استبدال نقاط الولاء ({p.points} نقطة = خصم حتى {fmt(Math.min(p.points, due))})</span>
+            </label>
+          )}
+          {usePts && <p className="text-xs text-emerald-700">خصم النقاط: −{fmt(redeem)} · المطلوب نقداً: <b>{fmt(cashDue)}</b></p>}
+          <Field label="المبلغ المحصَّل نقداً">
+            <input type="number" className={inputCls} value={f.amount ?? cashDue} onChange={set("amount")} />
+          </Field>
+          <Btn className="w-full" tone="emerald" onClick={() => {
+            const cash = Math.min(Number(f.amount ?? cashDue), cashDue);
+            if (cash < 0 || (cash === 0 && redeem === 0)) return;
+            const earned = Math.floor(cash / 100) * POINTS_PER_100;
+            update((d) => {
+              const appt = d.appointments.find((x) => x.id === a.id);
+              appt.paid += cash + redeem;
+              const pt = d.patients.find((x) => x.id === a.patientId);
+              pt.points = (pt.points || 0) - redeem + earned;
+              if (cash > 0)
+                d.payments.push({ id: uid(), date: todayStr(), patientId: a.patientId, doctorId: a.doctorId, apptId: a.id, amount: cash, note: a.service, source: "مريض" });
+              return d;
+            }, `تحصيل ${fmt(cash)} من ${p.name}${redeem ? ` + استبدال ${redeem} نقطة` : ""}${earned ? ` (كسب ${earned} نقطة)` : ""}`);
+            close();
+          }}>تأكيد التحصيل</Btn>
+          <p className="text-[10px] text-slate-400">يكسب المريض {POINTS_PER_100} نقاط تلقائياً عن كل 100 ج.م مدفوعة نقداً.</p>
+        </div>
+      </Modal>
+    );
+  }
+
+  if (modal.type === "patient") {
+    return (
+      <Modal title={edit ? "تعديل بيانات مريض" : "إضافة مريض"} onClose={close}>
+        <div className="space-y-3">
+          <Field label="الاسم"><input className={inputCls} value={f.name || ""} onChange={set("name")} /></Field>
+          <Field label="رقم الموبايل (واتساب)"><input dir="ltr" className={inputCls} placeholder="01xxxxxxxxx" value={f.phone || ""} onChange={set("phone")} /></Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="النوع">
+              <select className={inputCls} value={f.gender || ""} onChange={set("gender")}>
+                <option value="">—</option><option>ذكر</option><option>أنثى</option>
+              </select>
+            </Field>
+            <Field label="السن"><input type="number" className={inputCls} value={f.age || ""} onChange={set("age")} /></Field>
+          </div>
+          <Field label="تعاقد / نقابة">
+            <select className={inputCls} value={f.contractId || ""} onChange={set("contractId")}>
+              <option value="">بدون</option>
+              {db.contracts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </Field>
+          <Field label="ملاحظات طبية"><input className={inputCls} value={f.notes || ""} onChange={set("notes")} /></Field>
+          <Btn className="w-full" onClick={() => {
+            if (!f.name) return;
+            update((d) => {
+              if (edit) {
+                const x = d.patients.find((y) => y.id === edit.id);
+                x.name = f.name; x.phone = f.phone || ""; x.notes = f.notes || ""; x.contractId = f.contractId || "";
+                x.gender = f.gender || ""; x.age = Number(f.age || 0) || null;
+              } else {
+                d.patients.push({ id: uid(), name: f.name, phone: f.phone || "", notes: f.notes || "", contractId: f.contractId || "", gender: f.gender || "", age: Number(f.age || 0) || null, points: 0, teeth: {} });
+              }
+              return d;
+            }, edit ? `تعديل بيانات المريض: ${f.name}` : `إضافة مريض جديد: ${f.name}`);
+            close();
+          }}>حفظ</Btn>
+        </div>
+      </Modal>
+    );
+  }
+
+  if (modal.type === "record") {
+    return (
+      <Modal title="إضافة تحليل / أشعة / روشتة" onClose={close}>
+        <div className="space-y-3">
+          <Field label="النوع">
+            <div className="grid grid-cols-4 gap-1.5">
+              {["تحليل", "أشعة", "روشتة", "تقرير"].map((t) => (
+                <button key={t} onClick={() => setF({ ...f, type: t })}
+                  className={`text-xs py-2 rounded-lg border-2 font-semibold ${(f.type || "تحليل") === t ? "border-teal-600 bg-teal-50 text-teal-800" : "border-slate-200 text-slate-500"}`}>{t}</button>
+              ))}
+            </div>
+          </Field>
+          <Field label="العنوان"><input className={inputCls} placeholder="صورة دم كاملة، أشعة بانوراما، روشتة مضاد حيوي…" value={f.title || ""} onChange={set("title")} /></Field>
+          <Field label="التفاصيل / النتيجة / محتوى الروشتة">
+            <textarea rows="4" className={inputCls} placeholder={"مثال للروشتة:\nAugmentin 1g — قرص كل 12 ساعة لمدة 5 أيام\nBrufen 400 — عند اللزوم"} value={f.details || ""} onChange={set("details")} />
+          </Field>
+          <Field label="رابط مرفق (اختياري)"><input dir="ltr" className={inputCls} placeholder="رابط صورة الأشعة على جوجل درايف" value={f.link || ""} onChange={set("link")} /></Field>
+          <Field label="الطبيب">
+            <select className={inputCls} value={f.doctorId || (h.isOwner ? "" : h.myDocId)} onChange={set("doctorId")}>
+              <option value="">— اختر —</option>
+              {db.doctors.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          </Field>
+          <Field label="التاريخ"><input type="date" className={inputCls} value={f.date || todayStr()} onChange={set("date")} /></Field>
+          <Btn className="w-full" onClick={() => {
+            if (!f.title) return;
+            update((d) => {
+              if (!d.records) d.records = [];
+              d.records.push({ id: uid(), patientId: modal.data.patientId, doctorId: f.doctorId || h.myDocId || "", date: f.date || todayStr(), type: f.type || "تحليل", title: f.title, details: f.details || "", link: f.link || "" });
+              return d;
+            }, `إضافة ${f.type || "تحليل"} لـ${h.pName(modal.data.patientId)}: ${f.title}`);
+            close();
+          }}>حفظ</Btn>
+        </div>
+      </Modal>
+    );
+  }
+
+  if (modal.type === "plan") {
+    return (
+      <Modal title="إضافة إجراء لخطة العلاج" onClose={close}>
+        <div className="space-y-3">
+          <Field label="التخصص"><input className={inputCls} placeholder="أسنان، جلدية…" value={f.specialty || ""} onChange={set("specialty")} /></Field>
+          <Field label="الإجراء"><input className={inputCls} value={f.procedure || ""} onChange={set("procedure")} /></Field>
+          <Field label="الطبيب المسؤول">
+            <select className={inputCls} value={f.doctorId || (h.isOwner ? "" : h.myDocId)} onChange={set("doctorId")}>
+              <option value="">— اختر —</option>
+              {db.doctors.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          </Field>
+          <Field label="السعر التقديري"><input type="number" className={inputCls} value={f.price || ""} onChange={set("price")} /></Field>
+          <Field label="ملاحظات"><input className={inputCls} value={f.notes || ""} onChange={set("notes")} /></Field>
+          <Btn className="w-full" onClick={() => {
+            if (!f.procedure) return;
+            update((d) => {
+              d.plans.push({ id: uid(), patientId: modal.data.patientId, doctorId: f.doctorId || h.myDocId || "", specialty: f.specialty || "عام", procedure: f.procedure, price: Number(f.price || 0), status: "مقترح", notes: f.notes || "" });
+              return d;
+            }, `إضافة لخطة علاج ${h.pName(modal.data.patientId)}: ${f.procedure}`);
+            close();
+          }}>إضافة للخطة</Btn>
+        </div>
+      </Modal>
+    );
+  }
+
+  if (modal.type === "contract") {
+    return (
+      <Modal title={edit ? "تعديل التعاقد" : "تعاقد جديد"} onClose={close}>
+        <div className="space-y-3">
+          <Field label="اسم الجهة / النقابة"><input className={inputCls} value={f.name || ""} onChange={set("name")} /></Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="خصم على الأسعار (%)"><input type="number" className={inputCls} value={f.discount || ""} onChange={set("discount")} /></Field>
+            <Field label="يتحمل المريض (%)"><input type="number" className={inputCls} value={f.patientPct ?? ""} onChange={set("patientPct")} /></Field>
+          </div>
+          <p className="text-xs text-slate-500 bg-slate-50 rounded-xl p-2">يُخصم % من السعر أولاً، ثم يدفع المريض نسبته والباقي مطالبة على الجهة.</p>
+          <Field label="شروط التعاقد"><input className={inputCls} value={f.terms || ""} onChange={set("terms")} /></Field>
+          <Btn className="w-full" onClick={() => {
+            if (!f.name) return;
+            update((d) => {
+              if (edit) {
+                const x = d.contracts.find((y) => y.id === edit.id);
+                x.name = f.name; x.discount = Number(f.discount || 0); x.patientPct = Number(f.patientPct ?? 100); x.terms = f.terms || "";
+              } else {
+                d.contracts.push({ id: uid(), name: f.name, discount: Number(f.discount || 0), patientPct: Number(f.patientPct ?? 100), terms: f.terms || "", active: true });
+              }
+              return d;
+            }, edit ? `تعديل تعاقد: ${f.name}` : `إضافة تعاقد: ${f.name}`);
+            close();
+          }}>حفظ التعاقد</Btn>
+        </div>
+      </Modal>
+    );
+  }
+
+  if (modal.type === "lab") {
+    return (
+      <Modal title="إضافة حالة معمل" onClose={close}>
+        <div className="space-y-3">
+          <Field label="المريض">
+            <select className={inputCls} value={f.patientId || ""} onChange={set("patientId")}>
+              <option value="">— اختر —</option>
+              {db.patients.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </Field>
+          <Field label="الطبيب">
+            <select className={inputCls} value={f.doctorId || ""} onChange={set("doctorId")}>
+              <option value="">— اختر —</option>
+              {db.doctors.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          </Field>
+          <Field label="اسم المعمل"><input className={inputCls} value={f.labName || ""} onChange={set("labName")} /></Field>
+          <Field label="الشغلانة"><input className={inputCls} value={f.work || ""} onChange={set("work")} /></Field>
+          <Field label="التكلفة"><input type="number" className={inputCls} value={f.cost || ""} onChange={set("cost")} /></Field>
+          <Btn className="w-full" onClick={() => {
+            if (!f.patientId || !f.work) return;
+            update((d) => { d.labCases.push({ id: uid(), patientId: f.patientId, doctorId: f.doctorId || "", labName: f.labName || "", work: f.work, cost: Number(f.cost || 0), dateSent: todayStr(), status: "بالمعمل", paidToLab: false }); return d; }, `إرسال حالة للمعمل: ${f.work}`);
+            close();
+          }}>حفظ الحالة</Btn>
+        </div>
+      </Modal>
+    );
+  }
+
+  if (modal.type === "expense") {
+    return (
+      <Modal title="إضافة مصروف" onClose={close}>
+        <div className="space-y-3">
+          <Field label="البند"><input className={inputCls} value={f.item || ""} onChange={set("item")} /></Field>
+          <Field label="التصنيف"><input className={inputCls} value={f.category || ""} onChange={set("category")} /></Field>
+          <Field label="المبلغ"><input type="number" className={inputCls} value={f.amount || ""} onChange={set("amount")} /></Field>
+          <Btn className="w-full" tone="rose" onClick={() => {
+            if (!f.item || !f.amount) return;
+            update((d) => { d.expenses.push({ id: uid(), date: todayStr(), item: f.item, category: f.category || "عام", amount: Number(f.amount) }); return d; }, `مصروف: ${f.item} — ${fmt(f.amount)}`);
+            close();
+          }}>حفظ المصروف</Btn>
+        </div>
+      </Modal>
+    );
+  }
+
+  if (modal.type === "employee") {
+    return (
+      <Modal title={edit ? "تعديل بيانات الموظف" : "إضافة موظف"} onClose={close}>
+        <div className="space-y-3">
+          <Field label="الاسم"><input className={inputCls} value={f.name || ""} onChange={set("name")} /></Field>
+          <Field label="الوظيفة"><input className={inputCls} value={f.role || ""} onChange={set("role")} /></Field>
+          <Field label="المرتب الشهري"><input type="number" className={inputCls} value={f.salary || ""} onChange={set("salary")} /></Field>
+          <Field label="إيميل الموظف (فارغ = لا يمكنه الدخول)"><input dir="ltr" type="email" className={inputCls} placeholder="staff@example.com" value={f.email || ""} onChange={set("email")} /></Field>
+          <Field label="صلاحيات الموظف — يحددها المالك فقط">
+            <div className="grid grid-cols-2 gap-1.5 text-xs">
+              {[["appts", "المواعيد والحجز"], ["collect", "التحصيل"], ["patients", "المرضى والشيتات"], ["inventory", "المخزن"]].map(([k, label]) => (
+                <label key={k} className={`flex items-center gap-1.5 rounded-lg border p-2 cursor-pointer ${(f.perms || {})[k] ? "border-teal-600 bg-teal-50" : "border-slate-200"}`}>
+                  <input type="checkbox" checked={!!(f.perms || {})[k]}
+                    onChange={(ev) => setF({ ...f, perms: { ...(f.perms || {}), [k]: ev.target.checked } })} />
+                  <span>{label}</span>
+                </label>
+              ))}
+            </div>
+          </Field>
+          <Btn className="w-full" onClick={() => {
+            if (!f.name) return;
+            update((d) => {
+              if (edit) {
+                const x = d.employees.find((y) => y.id === edit.id);
+                x.name = f.name; x.role = f.role || ""; x.salary = Number(f.salary || 0);
+                x.email = f.email || ""; x.perms = f.perms || {};
+              } else {
+                d.employees.push({ id: uid(), name: f.name, role: f.role || "", salary: Number(f.salary || 0), email: f.email || "", perms: f.perms || {} });
+              }
+              return d;
+            }, edit ? `تعديل بيانات الموظف: ${f.name}` : `إضافة موظف: ${f.name}`);
+            close();
+          }}>حفظ</Btn>
+        </div>
+      </Modal>
+    );
+  }
+
+  if (modal.type === "payrollTx") {
+    const e = modal.data;
+    return (
+      <Modal title={`حركة مرتب — ${e.name}`} onClose={close}>
+        <div className="space-y-3">
+          <Field label="النوع">
+            <select className={inputCls} value={f.type || "مكافأة"} onChange={set("type")}>
+              <option>مكافأة</option><option>خصم</option><option>سلفة</option>
+            </select>
+          </Field>
+          <Field label="المبلغ"><input type="number" className={inputCls} value={f.amount || ""} onChange={set("amount")} /></Field>
+          <Field label="ملاحظة"><input className={inputCls} value={f.note || ""} onChange={set("note")} /></Field>
+          <Btn className="w-full" onClick={() => {
+            if (!f.amount) return;
+            update((d) => { d.payrollTx.push({ id: uid(), empId: e.id, date: todayStr(), type: f.type || "مكافأة", amount: Number(f.amount), note: f.note || "", settled: false }); return d; }, `${f.type || "مكافأة"} ${fmt(f.amount)} لـ${e.name}`);
+            close();
+          }}>حفظ الحركة</Btn>
+        </div>
+      </Modal>
+    );
+  }
+
+  if (modal.type === "item") {
+    return (
+      <Modal title={edit ? "تعديل صنف" : "إضافة صنف للمخزن"} onClose={close}>
+        <div className="space-y-3">
+          <Field label="اسم الصنف"><input className={inputCls} value={f.name || ""} onChange={set("name")} /></Field>
+          <div className="grid grid-cols-3 gap-3">
+            <Field label="الوحدة"><input className={inputCls} value={f.unit || ""} onChange={set("unit")} /></Field>
+            <Field label="الكمية"><input type="number" className={inputCls} value={f.qty || ""} onChange={set("qty")} /></Field>
+            <Field label="الحد الأدنى"><input type="number" className={inputCls} value={f.min || ""} onChange={set("min")} /></Field>
+          </div>
+          <Btn className="w-full" onClick={() => {
+            if (!f.name) return;
+            update((d) => {
+              if (edit) {
+                const x = d.inventory.find((y) => y.id === edit.id);
+                x.name = f.name; x.unit = f.unit || "وحدة"; x.qty = Number(f.qty || 0); x.min = Number(f.min || 0);
+              } else {
+                d.inventory.push({ id: uid(), name: f.name, unit: f.unit || "وحدة", qty: Number(f.qty || 0), min: Number(f.min || 0) });
+              }
+              return d;
+            }, edit ? `تعديل صنف: ${f.name}` : `إضافة صنف للمخزن: ${f.name}`);
+            close();
+          }}>حفظ الصنف</Btn>
+        </div>
+      </Modal>
+    );
+  }
+
+  if (modal.type === "doctor") {
+    return (
+      <Modal title={edit ? "تعديل بيانات الطبيب" : "إضافة طبيب (حساب منفصل)"} onClose={close}>
+        <div className="space-y-3">
+          <Field label="الاسم"><input className={inputCls} value={f.name || ""} onChange={set("name")} /></Field>
+          <Field label="التخصص"><input className={inputCls} value={f.specialty || ""} onChange={set("specialty")} /></Field>
+          <Field label="نسبة الطبيب (%)"><input type="number" className={inputCls} value={f.commission || ""} onChange={set("commission")} /></Field>
+          <Field label="إيميل الطبيب (هيسجل بيه دخوله)"><input dir="ltr" type="email" className={inputCls} placeholder="doctor@example.com" value={f.email || ""} onChange={set("email")} /></Field>
+          <Btn className="w-full" onClick={() => {
+            if (!f.name) return;
+            update((d) => {
+              if (edit) {
+                const x = d.doctors.find((y) => y.id === edit.id);
+                x.name = f.name; x.specialty = f.specialty || ""; x.commission = Number(f.commission || 0); x.email = f.email || x.email;
+              } else {
+                d.doctors.push({ id: uid(), name: f.name, specialty: f.specialty || "", commission: Number(f.commission || 0), email: f.email || "" });
+              }
+              return d;
+            }, edit ? `تعديل بيانات الطبيب: ${f.name}` : `إنشاء حساب طبيب: ${f.name}`);
+            close();
+          }}>{edit ? "حفظ التعديلات" : "إنشاء الحساب"}</Btn>
+        </div>
+      </Modal>
+    );
+  }
+
+  return null;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<Root />);
+</script>
+</body>
+</html>
