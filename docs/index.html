@@ -117,8 +117,18 @@ const COLS = {
   },
   appointments: {
     table: "appointments",
-    from: (r) => ({ id: r.id, patientId: r.patient_id, doctorId: es(r.doctor_id), date: r.date, time: r.time, service: es(r.service), price: num(r.price), contractId: es(r.contract_id), patientShare: num(r.patient_share), entityShare: num(r.entity_share), entityPaid: !!r.entity_paid, paid: num(r.paid), status: r.status }),
-    to: (o) => ({ id: o.id, clinic_id: CID, patient_id: o.patientId, doctor_id: nn(o.doctorId), date: o.date, time: o.time, service: o.service || "كشف", price: o.price || 0, contract_id: nn(o.contractId), patient_share: o.patientShare || 0, entity_share: o.entityShare || 0, entity_paid: !!o.entityPaid, paid: o.paid || 0, status: o.status }),
+    from: (r) => ({ id: r.id, patientId: r.patient_id, doctorId: es(r.doctor_id), date: r.date, time: r.time, service: es(r.service), price: num(r.price), contractId: es(r.contract_id), patientShare: num(r.patient_share), entityShare: num(r.entity_share), entityPaid: !!r.entity_paid, paid: num(r.paid), status: r.status, branchId: es(r.branch_id) }),
+    to: (o) => ({ id: o.id, clinic_id: CID, patient_id: o.patientId, doctor_id: nn(o.doctorId), date: o.date, time: o.time, service: o.service || "كشف", price: o.price || 0, contract_id: nn(o.contractId), patient_share: o.patientShare || 0, entity_share: o.entityShare || 0, entity_paid: !!o.entityPaid, paid: o.paid || 0, status: o.status, branch_id: nn(o.branchId) }),
+  },
+  branches: {
+    table: "clinic_branches",
+    from: (r) => ({ id: r.id, name: r.name, address: es(r.address), phone: es(r.phone), isHeadOffice: !!r.is_head_office, active: r.active !== false }),
+    to: (o) => ({ id: o.id, clinic_id: CID, name: o.name, address: o.address || "", phone: o.phone || "", is_head_office: !!o.isHeadOffice, active: o.active !== false }),
+  },
+  branchAssignments: {
+    table: "member_branch_assignments",
+    from: (r) => ({ id: r.id, memberId: r.member_id, branchId: r.branch_id, isPrimary: !!r.is_primary }),
+    to: (o) => ({ id: o.id, clinic_id: CID, member_id: o.memberId, branch_id: o.branchId, is_primary: !!o.isPrimary }),
   },
   plans: {
     table: "treatment_plans",
@@ -177,7 +187,7 @@ const defaultPermsForJobTitle = (jobTitlePerms, jobTitleId) => {
 /* تحميل كل البيانات المسموح بها لهذا المستخدم (الحماية من قاعدة البيانات نفسها) */
 async function loadAll(member) {
   CID = member.clinic_id;
-  const tables = ["members", "contracts", "patients", "appointments", "treatment_plans", "medical_records", "payments", "expenses", "inventory_items", "lab_cases", "attendance", "payroll_tx", "audit_logs", "clinics", "specialties", "job_titles", "job_title_permissions"];
+  const tables = ["members", "contracts", "patients", "appointments", "treatment_plans", "medical_records", "payments", "expenses", "inventory_items", "lab_cases", "attendance", "payroll_tx", "audit_logs", "clinics", "specialties", "job_titles", "job_title_permissions", "clinic_branches", "member_branch_assignments"];
   const res = {};
   for (const t of tables) {
     const q = sb.from(t).select("*").limit(5000);
@@ -211,6 +221,8 @@ async function loadAll(member) {
     specialties: res.specialties.map(COLS.specialties.from),
     jobTitles: res.job_titles.map(COLS.jobTitles.from),
     jobTitlePerms: res.job_title_permissions.map(COLS.jobTitlePerms.from),
+    branches: res.clinic_branches.map(COLS.branches.from),
+    branchAssignments: res.member_branch_assignments.map(COLS.branchAssignments.from),
     logs: auditRows,
     auditFlags: auditRows.filter((x) => x.sensitive),
   };
@@ -498,6 +510,16 @@ const contractSplit = (price, contract) => {
   const net = Math.round(price * (1 - (contract.discount || 0) / 100));
   const patientShare = Math.round((net * (contract.patientPct ?? 100)) / 100);
   return { net, patientShare, entityShare: net - patientShare };
+};
+
+/* الفرع الأساسي لعضو (طبيب/موظف) */
+const primaryBranchOf = (db, memberId) => {
+  const a = db.branchAssignments.find((x) => x.memberId === memberId && x.isPrimary);
+  return a ? db.branches.find((b) => b.id === a.branchId) : null;
+};
+const setPrimaryBranch = (d, memberId, branchId) => {
+  d.branchAssignments = d.branchAssignments.filter((x) => x.memberId !== memberId);
+  if (branchId) d.branchAssignments.push({ id: uid(), memberId, branchId, isPrimary: true });
 };
 
 /* حالات الأسنان وألوانها */
@@ -803,11 +825,14 @@ function Dashboard({ db, h }) {
 function Appointments({ db, h, update, setModal }) {
   const [date, setDate] = useState(todayStr());
   const [spec, setSpec] = useState("");
+  const [branchId, setBranchId] = useState("");
   const specs = [...new Set(db.doctors.map((d) => d.specialty).filter(Boolean))];
   const docSpec = (id) => db.doctors.find((d) => d.id === id)?.specialty || "";
+  const branchName = (id) => db.branches.find((b) => b.id === id)?.name || "";
   const list = db.appointments
     .filter((a) => a.date === date && (h.isOwner || h.isStaff || a.doctorId === h.myDocId))
     .filter((a) => !spec || docSpec(a.doctorId) === spec)
+    .filter((a) => !branchId || a.branchId === branchId)
     .sort((a, b) => a.time.localeCompare(b.time));
   const statusTone = { "محجوز": "bg-sky-100 text-sky-700", "تم": "bg-emerald-100 text-emerald-700", "ملغي": "bg-slate-200 text-slate-500" };
 
@@ -823,8 +848,18 @@ function Appointments({ db, h, update, setModal }) {
     <>
       <div className="flex items-center gap-2">
         <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputCls + " flex-1"} />
-        <Btn onClick={() => setModal({ type: "appt", data: { date } })}>+ حجز جديد</Btn>
+        <Btn onClick={() => setModal({ type: "appt", data: { date, branchId } })}>+ حجز جديد</Btn>
       </div>
+      {(h.isOwner || h.isStaff) && db.branches.length > 1 && (
+        <div className="flex gap-1.5 overflow-x-auto pb-1">
+          <button onClick={() => setBranchId("")}
+            className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${branchId === "" ? "bg-violet-700 text-white" : "bg-white text-slate-600 border border-slate-200"}`}>كل الفروع</button>
+          {db.branches.map((b) => (
+            <button key={b.id} onClick={() => setBranchId(b.id)}
+              className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${branchId === b.id ? "bg-violet-700 text-white" : "bg-white text-slate-600 border border-slate-200"}`}>🏢 {b.name}</button>
+          ))}
+        </div>
+      )}
       {(h.isOwner || h.isStaff) && specs.length > 1 && (
         <div className="flex gap-1.5 overflow-x-auto pb-1">
           <button onClick={() => setSpec("")}
@@ -845,7 +880,7 @@ function Appointments({ db, h, update, setModal }) {
                 <div className="flex items-start justify-between gap-2">
                   <div>
                     <p className="font-bold">{a.time} — {h.pName(a.patientId)}</p>
-                    <p className="text-xs text-slate-500 mt-0.5">{a.service} · {h.dName(a.doctorId)}</p>
+                    <p className="text-xs text-slate-500 mt-0.5">{a.service} · {h.dName(a.doctorId)}{db.branches.length > 1 && a.branchId && ` · 🏢 ${branchName(a.branchId)}`}</p>
                     {a.contractId && <p className="text-xs text-violet-600 mt-0.5">📜 {h.cName(a.contractId)} — على الجهة {fmt(a.entityShare)}</p>}
                   </div>
                   <span className={`text-xs px-2 py-1 rounded-full font-semibold ${statusTone[a.status]}`}>{a.status}</span>
@@ -1414,7 +1449,8 @@ function Staff({ db, update, setModal }) {
             <Card key={e.id} className="p-4">
               <div className="flex items-center gap-3">
                 <div className="flex-1">
-                  <p className="font-semibold">{e.name} <span className="text-xs text-slate-500">· {e.role}</span></p>
+                  <p className="font-semibold">{e.name} <span className="text-xs text-slate-500">· {e.role}</span>
+                    {db.branches.length > 0 && <span className="text-[10px] bg-violet-50 text-violet-700 rounded-full px-2 py-0.5">🏢 {primaryBranchOf(db, e.id)?.name || "بدون فرع"}</span>}</p>
                   {r ? <p className="text-xs mt-0.5"><span className="text-emerald-600">حضور {r.in}</span>{r.out && <span className="text-rose-600"> · انصراف {r.out}</span>}</p>
                     : <p className="text-xs text-slate-400 mt-0.5">لم يسجل حضور اليوم</p>}
                 </div>
@@ -1444,6 +1480,7 @@ function Staff({ db, update, setModal }) {
                 )}
                 <div className="flex gap-2 mt-2">
                   <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "payrollTx", data: e })}>+ مكافأة / خصم / سلفة</Btn>
+                  {db.branches.length > 0 && <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "memberBranch", data: { memberId: e.id, name: e.name } })}>الفرع</Btn>}
                   <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "employee", data: { edit: e } })}>تعديل</Btn>
                   <Btn size="sm" tone="rose" onClick={() => {
                     if (!window.confirm("حذف الموظف " + e.name + " وكل سجلات حضوره وحركات مرتبه؟")) return;
@@ -1541,6 +1578,33 @@ function Settings({ db, update, setModal }) {
       </Card>
 
       <div className="flex justify-between items-center">
+        <h2 className="font-bold text-teal-900">الفروع</h2>
+        <Btn size="sm" onClick={() => setModal({ type: "branch" })}>+ فرع</Btn>
+      </div>
+      <div className="space-y-2">
+        {db.branches.length === 0 ? <Card className="p-3"><Empty text="لا توجد فروع — العيادة بتشتغل كموقع واحد. أضف فرعاً لو هتفتح مكان تاني" /></Card> : (
+          db.branches.map((b) => (
+            <Card key={b.id} className="p-3 flex items-center gap-3">
+              <div className="flex-1 min-w-0">
+                <p className="font-semibold truncate">{b.name} {b.isHeadOffice && <span className="text-[10px] bg-teal-50 text-teal-700 rounded-full px-2 py-0.5">🏠 الفرع الرئيسي</span>}
+                  {!b.active && <span className="text-[10px] bg-slate-100 text-slate-400 rounded-full px-2 py-0.5">معطّل</span>}</p>
+                <p className="text-xs text-slate-500 truncate">{b.address || "بدون عنوان"} {b.phone && `· ${b.phone}`}</p>
+              </div>
+              <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "branch", data: { edit: b } })}>تعديل</Btn>
+              <Btn size="sm" tone="rose" onClick={() => {
+                if (!window.confirm(`حذف فرع "${b.name}"؟`)) return;
+                update((d) => {
+                  d.branches = d.branches.filter((x) => x.id !== b.id);
+                  d.branchAssignments = d.branchAssignments.filter((x) => x.branchId !== b.id);
+                  return d;
+                }, "حذف فرع: " + b.name);
+              }}>حذف</Btn>
+            </Card>
+          ))
+        )}
+      </div>
+
+      <div className="flex justify-between items-center">
         <h2 className="font-bold text-teal-900">التخصصات الطبية</h2>
         <Btn size="sm" onClick={() => setModal({ type: "specialty" })}>+ تخصص</Btn>
       </div>
@@ -1588,19 +1652,24 @@ function Settings({ db, update, setModal }) {
         <Btn size="sm" onClick={() => setModal({ type: "doctor" })}>+ طبيب</Btn>
       </div>
       <div className="space-y-2">
-        {[...db.doctors].sort((a, b) => (a.specialty || "").localeCompare(b.specialty || "")).map((d) => (
+        {[...db.doctors].sort((a, b) => (a.specialty || "").localeCompare(b.specialty || "")).map((d) => {
+          const branch = primaryBranchOf(db, d.id);
+          return (
           <Card key={d.id} className="p-4 flex items-center gap-3">
             <div className="flex-1">
-              <p className="font-semibold">{d.name} <span className="text-[10px] bg-teal-50 text-teal-700 rounded-full px-2 py-0.5">{d.specialty || "عام"}</span></p>
+              <p className="font-semibold">{d.name} <span className="text-[10px] bg-teal-50 text-teal-700 rounded-full px-2 py-0.5">{d.specialty || "عام"}</span>
+                {db.branches.length > 0 && <span className="text-[10px] bg-violet-50 text-violet-700 rounded-full px-2 py-0.5">🏢 {branch ? branch.name : "بدون فرع"}</span>}</p>
               <p className="text-xs text-slate-500">نسبة {d.commission}% · {d.email || "⚠️ بدون إيميل"}</p>
             </div>
+            {db.branches.length > 0 && <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "memberBranch", data: { memberId: d.id, name: d.name } })}>الفرع</Btn>}
             <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "doctor", data: { edit: d } })}>تعديل</Btn>
             <Btn size="sm" tone="rose" onClick={() => {
               if (!window.confirm("حذف حساب " + d.name + "؟ سيُمنع من الدخول نهائياً.")) return;
               update((x) => { x.doctors = x.doctors.filter((y) => y.id !== d.id); return x; }, "حذف حساب الطبيب: " + d.name);
             }}>حذف</Btn>
           </Card>
-        ))}
+          );
+        })}
       </div>
     </>
   );
@@ -1863,6 +1932,14 @@ function Modals({ modal, setModal, db, update, h, audit }) {
               {db.doctors.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
             </select>
           </Field>
+          {db.branches.length > 1 && (
+            <Field label="الفرع">
+              <select className={inputCls} value={f.branchId !== undefined ? f.branchId : (modal.data.branchId || "")} onChange={set("branchId")}>
+                <option value="">— بدون تحديد —</option>
+                {db.branches.filter((b) => b.active).map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
+            </Field>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <Field label="التاريخ"><input type="date" className={inputCls} value={f.date || modal.data.date} onChange={set("date")} /></Field>
             <Field label="الوقت"><input type="time" className={inputCls} value={f.time || ""} onChange={set("time")} /></Field>
@@ -1889,6 +1966,7 @@ function Modals({ modal, setModal, db, update, h, audit }) {
                 id: uid(), patientId: f.patientId, doctorId, date: f.date || modal.data.date, time: f.time,
                 service: f.service || "كشف", price: Number(f.price || 0), contractId: autoContract || "",
                 patientShare: split.patientShare, entityShare: split.entityShare, entityPaid: false, paid: 0, status: "محجوز",
+                branchId: (f.branchId !== undefined ? f.branchId : (modal.data.branchId || "")) || "",
               });
               return d;
             }, `حجز موعد لـ${h.pName(f.patientId)} — ${f.service || "كشف"}`);
@@ -2117,6 +2195,63 @@ function Modals({ modal, setModal, db, update, h, audit }) {
             update((d) => { d.expenses.push({ id: uid(), date: todayStr(), item: f.item, category: f.category || "عام", amount: Number(f.amount) }); return d; }, `مصروف: ${f.item} — ${fmt(f.amount)}`);
             close();
           }}>حفظ المصروف</Btn>
+        </div>
+      </Modal>
+    );
+  }
+
+  if (modal.type === "branch") {
+    return (
+      <Modal title={edit ? "تعديل فرع" : "إضافة فرع"} onClose={close}>
+        <div className="space-y-3">
+          <Field label="اسم الفرع"><input className={inputCls} placeholder="مثال: فرع المعادي" value={f.name || ""} onChange={set("name")} /></Field>
+          <Field label="العنوان"><input className={inputCls} value={f.address || ""} onChange={set("address")} /></Field>
+          <Field label="التليفون"><input dir="ltr" className={inputCls} value={f.phone || ""} onChange={set("phone")} /></Field>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={!!f.isHeadOffice} onChange={(e) => setF({ ...f, isHeadOffice: e.target.checked })} />
+            <span>الفرع الرئيسي</span>
+          </label>
+          {edit && (
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={f.active !== false} onChange={(e) => setF({ ...f, active: e.target.checked })} />
+              <span>فرع فعّال</span>
+            </label>
+          )}
+          <Btn className="w-full" onClick={() => {
+            if (!f.name || !f.name.trim()) return;
+            update((d) => {
+              if (edit) {
+                const x = d.branches.find((y) => y.id === edit.id);
+                x.name = f.name.trim(); x.address = f.address || ""; x.phone = f.phone || ""; x.isHeadOffice = !!f.isHeadOffice; x.active = f.active !== false;
+              } else {
+                d.branches.push({ id: uid(), name: f.name.trim(), address: f.address || "", phone: f.phone || "", isHeadOffice: !!f.isHeadOffice, active: true });
+              }
+              return d;
+            }, edit ? `تعديل فرع: ${f.name}` : `إضافة فرع: ${f.name}`);
+            close();
+          }}>حفظ</Btn>
+        </div>
+      </Modal>
+    );
+  }
+
+  if (modal.type === "memberBranch") {
+    const { memberId, name } = modal.data;
+    const current = primaryBranchOf(db, memberId);
+    return (
+      <Modal title={`فرع عمل — ${name}`} onClose={close}>
+        <div className="space-y-3">
+          <Field label="الفرع">
+            <select className={inputCls} defaultValue={current ? current.id : ""} onChange={(e) => setF({ ...f, branchId: e.target.value })}>
+              <option value="">— بدون فرع محدد —</option>
+              {db.branches.filter((b) => b.active).map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </select>
+          </Field>
+          <Btn className="w-full" onClick={() => {
+            const branchId = f.branchId !== undefined ? f.branchId : (current ? current.id : "");
+            update((d) => { setPrimaryBranch(d, memberId, branchId || null); return d; }, `تعيين فرع لـ${name}`);
+            close();
+          }}>حفظ</Btn>
         </div>
       </Modal>
     );
