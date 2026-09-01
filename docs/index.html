@@ -152,13 +152,13 @@ const COLS = {
   },
   inventory: {
     table: "inventory_items",
-    from: (r) => ({ id: r.id, name: r.name, unit: es(r.unit) || "وحدة", qty: num(r.qty), min: num(r.min_qty), cost: num(r.default_unit_cost) }),
-    to: (o) => ({ id: o.id, clinic_id: CID, name: o.name, unit: o.unit || "وحدة", qty: o.qty || 0, min_qty: o.min || 0, default_unit_cost: o.cost || 0 }),
+    from: (r) => ({ id: r.id, name: r.name, unit: es(r.unit) || "وحدة", qty: num(r.qty), min: num(r.min_qty), cost: num(r.default_unit_cost), itemType: es(r.item_type) || "consumable" }),
+    to: (o) => ({ id: o.id, clinic_id: CID, name: o.name, unit: o.unit || "وحدة", qty: o.qty || 0, min_qty: o.min || 0, default_unit_cost: o.cost || 0, item_type: o.itemType || "consumable" }),
   },
   services: {
     table: "clinic_services",
-    from: (r) => ({ id: r.id, name: r.name_ar, price: num(r.default_price), duration: num(r.default_duration_minutes) || 30, specialtyId: es(r.specialty_id), active: r.active !== false }),
-    to: (o) => ({ id: o.id, clinic_id: CID, name_ar: o.name, default_price: o.price || 0, default_duration_minutes: o.duration || 30, specialty_id: nn(o.specialtyId), active: o.active !== false }),
+    from: (r) => ({ id: r.id, name: r.name_ar, price: num(r.default_price), duration: num(r.default_duration_minutes) || 30, specialtyId: es(r.specialty_id), active: r.active !== false, autoPricing: !!r.auto_pricing }),
+    to: (o) => ({ id: o.id, clinic_id: CID, name_ar: o.name, default_price: o.price || 0, default_duration_minutes: o.duration || 30, specialty_id: nn(o.specialtyId), active: o.active !== false, auto_pricing: !!o.autoPricing }),
   },
   serviceRecipe: {
     table: "service_consumable_recipe",
@@ -169,6 +169,16 @@ const COLS = {
     table: "suppliers",
     from: (r) => ({ id: r.id, name: r.name, contact: es(r.contact_person), phone: es(r.phone), notes: es(r.notes), active: r.active !== false }),
     to: (o) => ({ id: o.id, clinic_id: CID, name: o.name, contact_person: o.contact || "", phone: o.phone || "", notes: o.notes || "", active: o.active !== false }),
+  },
+  purchaseInvoices: {
+    table: "purchase_invoices",
+    from: (r) => ({ id: r.id, supplierId: es(r.supplier_id), date: r.invoice_date, total: num(r.total), paidAmount: num(r.paid_amount), notes: es(r.notes) }),
+    to: (o) => ({ id: o.id, clinic_id: CID, supplier_id: nn(o.supplierId), invoice_date: o.date || todayStr(), status: (o.paidAmount || 0) >= (o.total || 0) ? "paid" : "open", total: o.total || 0, paid_amount: o.paidAmount || 0, notes: o.notes || "" }),
+  },
+  supplierPayments: {
+    table: "supplier_payments",
+    from: (r) => ({ id: r.id, supplierId: r.supplier_id, invoiceId: es(r.purchase_invoice_id), amount: num(r.amount), date: r.payment_date, notes: es(r.notes) }),
+    to: (o) => ({ id: o.id, clinic_id: CID, supplier_id: o.supplierId, purchase_invoice_id: nn(o.invoiceId), amount: o.amount || 0, payment_date: o.date || todayStr(), notes: o.notes || "" }),
   },
   overheadCategories: {
     table: "overhead_categories",
@@ -226,7 +236,7 @@ const defaultPermsForJobTitle = (jobTitlePerms, jobTitleId) => {
 /* تحميل كل البيانات المسموح بها لهذا المستخدم (الحماية من قاعدة البيانات نفسها) */
 async function loadAll(member) {
   CID = member.clinic_id;
-  const tables = ["members", "contracts", "patients", "appointments", "treatment_plans", "medical_records", "payments", "expenses", "inventory_items", "lab_cases", "attendance", "payroll_tx", "audit_logs", "clinics", "specialties", "job_titles", "job_title_permissions", "clinic_branches", "member_branch_assignments", "clinic_services", "service_consumable_recipe", "suppliers", "overhead_categories", "clinic_overhead_costs", "overhead_allocation_settings"];
+  const tables = ["members", "contracts", "patients", "appointments", "treatment_plans", "medical_records", "payments", "expenses", "inventory_items", "lab_cases", "attendance", "payroll_tx", "audit_logs", "clinics", "specialties", "job_titles", "job_title_permissions", "clinic_branches", "member_branch_assignments", "clinic_services", "service_consumable_recipe", "suppliers", "overhead_categories", "clinic_overhead_costs", "overhead_allocation_settings", "purchase_invoices", "supplier_payments"];
   const res = {};
   for (const t of tables) {
     const q = sb.from(t).select("*").limit(5000);
@@ -265,6 +275,8 @@ async function loadAll(member) {
     services: res.clinic_services.map(COLS.services.from),
     serviceRecipe: res.service_consumable_recipe.map(COLS.serviceRecipe.from),
     suppliers: res.suppliers.map(COLS.suppliers.from),
+    purchaseInvoices: res.purchase_invoices.map(COLS.purchaseInvoices.from),
+    supplierPayments: res.supplier_payments.map(COLS.supplierPayments.from),
     overheadCategories: res.overhead_categories.map(COLS.overheadCategories.from),
     overheadCosts: res.clinic_overhead_costs.map(COLS.overheadCosts.from),
     overheadSettings: res.overhead_allocation_settings[0]
@@ -612,6 +624,60 @@ async function verifyAttendanceLocation(branch) {
     return { method: "manual", branchId: branch.id, manualOverride: true, overrideReason: reason.trim() };
   }
 }
+
+/* تكلفة الخدمة الحقيقية: مستهلكات + نصيب من المصاريف الثابتة */
+const monthlyOverheadPerCase = (db, monthKey) => {
+  const monthOverhead = db.overheadCosts.filter((c) => c.month === monthKey).reduce((s, c) => s + c.amount, 0);
+  return db.overheadSettings.expectedCases > 0 ? monthOverhead / db.overheadSettings.expectedCases : 0;
+};
+const computeServiceCost = (db, service, overheadPerCase) => {
+  const recipe = db.serviceRecipe.filter((r) => r.serviceId === service.id);
+  const consumablesCost = recipe.reduce((sum, r) => {
+    const item = db.inventory.find((i) => i.id === r.itemId);
+    const qtyWithWaste = r.qty * (1 + (r.wastagePct || 0) / 100);
+    return sum + qtyWithWaste * (item ? item.cost : 0);
+  }, 0);
+  const totalCost = consumablesCost + overheadPerCase;
+  const margin = service.price - totalCost;
+  const marginPct = service.price > 0 ? Math.round((margin / service.price) * 100) : 0;
+  return { consumablesCost, overheadPerCase, totalCost, margin, marginPct };
+};
+/* يعيد ضبط سعر الخدمات اللي مفعّل عليها "تسعير تلقائي" بحيث يحافظ على هامش الربح المستهدف بعد تغيّر تكلفة المستهلكات */
+const recomputeAutoPricedServices = (d) => {
+  const overheadPerCase = monthlyOverheadPerCase(d, todayStr().slice(0, 7));
+  const target = d.overheadSettings.targetMarginPct || 0;
+  d.services.forEach((s) => {
+    if (!s.autoPricing) return;
+    const { totalCost } = computeServiceCost(d, s, overheadPerCase);
+    const newPrice = target < 100 ? totalCost / (1 - target / 100) : totalCost;
+    s.price = Math.max(0, Math.round(newPrice));
+  });
+};
+/* رصيد مورد: إجمالي الفواتير − إجمالي المدفوع = الدين المتبقي */
+const supplierBalance = (db, supplierId) => {
+  const invoices = db.purchaseInvoices.filter((i) => i.supplierId === supplierId);
+  const total = invoices.reduce((s, i) => s + i.total, 0);
+  const paid = invoices.reduce((s, i) => s + i.paidAmount, 0);
+  return { total, paid, owed: Math.max(0, total - paid) };
+};
+/* سداد دين مورد: بيقفل أقدم الفواتير المفتوحة أولاً (FIFO) ويسجل مصروف فعلي وقت خروج الكاش */
+const paySupplierDebt = (d, supplierId, amount, supplierName) => {
+  let remaining = amount;
+  const open = d.purchaseInvoices.filter((i) => i.supplierId === supplierId && i.paidAmount < i.total).sort((a, b) => a.date.localeCompare(b.date));
+  for (const inv of open) {
+    if (remaining <= 0) break;
+    const due = inv.total - inv.paidAmount;
+    const pay = Math.min(due, remaining);
+    inv.paidAmount += pay;
+    remaining -= pay;
+  }
+  const applied = amount - remaining;
+  if (applied > 0) {
+    d.supplierPayments.push({ id: uid(), supplierId, invoiceId: "", amount: applied, date: todayStr(), notes: "" });
+    d.expenses.push({ id: uid(), date: todayStr(), item: `سداد دين مورد: ${supplierName}`, category: "مخزن", amount: applied });
+  }
+  return applied;
+};
 
 /* حالات الأسنان وألوانها */
 const TOOTH_STATES = {
@@ -1342,19 +1408,14 @@ function Finance({ db, h, setModal, update }) {
 function Reports({ db, h, update }) {
   const monthKey = todayStr().slice(0, 7);
   const monthOverhead = db.overheadCosts.filter((c) => c.month === monthKey).reduce((s, c) => s + c.amount, 0);
-  const overheadPerCase = db.overheadSettings.expectedCases > 0 ? monthOverhead / db.overheadSettings.expectedCases : 0;
-  const serviceCosts = db.services.filter((s) => s.active).map((s) => {
-    const recipe = db.serviceRecipe.filter((r) => r.serviceId === s.id);
-    const consumablesCost = recipe.reduce((sum, r) => {
-      const item = db.inventory.find((i) => i.id === r.itemId);
-      const qtyWithWaste = r.qty * (1 + (r.wastagePct || 0) / 100);
-      return sum + qtyWithWaste * (item ? item.cost : 0);
-    }, 0);
-    const totalCost = consumablesCost + overheadPerCase;
-    const margin = s.price - totalCost;
-    const marginPct = s.price > 0 ? Math.round((margin / s.price) * 100) : 0;
-    return { ...s, consumablesCost, totalCost, margin, marginPct };
-  });
+  const overheadPerCase = monthlyOverheadPerCase(db, monthKey);
+  const serviceCosts = db.services.filter((s) => s.active).map((s) => ({ ...s, ...computeServiceCost(db, s, overheadPerCase) }));
+  const lossServices = serviceCosts.filter((s) => s.margin < 0);
+
+  const weekAgo = new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10);
+  const weekRevenue = db.payments.filter((p) => p.date >= weekAgo).reduce((s, p) => s + p.amount, 0);
+  const weekExpenses = db.expenses.filter((e) => e.date >= weekAgo).reduce((s, e) => s + e.amount, 0);
+  const weekNet = weekRevenue - weekExpenses;
 
   const revByDoc = db.doctors.map((d) => ({
     label: d.name,
@@ -1380,17 +1441,39 @@ function Reports({ db, h, update }) {
   return (
     <>
       <Card className="p-4">
+        <h2 className="font-bold text-teal-900 mb-3">📅 تقرير آخر 7 أيام</h2>
+        <div className="grid grid-cols-3 gap-3">
+          <Stat label="تحصيلات" value={fmt(weekRevenue)} tone="emerald" />
+          <Stat label="مصاريف" value={fmt(weekExpenses)} tone="rose" />
+          <Stat label="الصافي" value={fmt(weekNet)} tone={weekNet >= 0 ? "emerald" : "rose"} />
+        </div>
+      </Card>
+
+      {lossServices.length > 0 && (
+        <Card className="p-4 border-2 border-rose-300 bg-rose-50">
+          <h2 className="font-bold text-rose-800 mb-2">🚨 تنبيه خسارة — خدمات سعرها أقل من تكلفتها الحقيقية</h2>
+          <div className="space-y-1">
+            {lossServices.map((s) => (
+              <p key={s.id} className="text-xs text-rose-700">
+                <b>{s.name}</b>: السعر {fmt(s.price)} — التكلفة {fmt(Math.round(s.totalCost))} — خسارة {fmt(Math.round(-s.margin))} في الحالة
+              </p>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      <Card className="p-4">
         <div className="flex items-center justify-between mb-3">
           <h2 className="font-bold text-teal-900">💵 التكلفة الحقيقية للخدمات وهامش الربح</h2>
         </div>
         <div className="grid grid-cols-2 gap-3 mb-3">
           <Field label="عدد الحالات المتوقعة شهريًا">
             <input type="number" className={inputCls} value={db.overheadSettings.expectedCases}
-              onChange={(e) => update((d) => { d.overheadSettings = { ...d.overheadSettings, expectedCases: Number(e.target.value) || 0 }; return d; })} />
+              onChange={(e) => update((d) => { d.overheadSettings = { ...d.overheadSettings, expectedCases: Number(e.target.value) || 0 }; recomputeAutoPricedServices(d); return d; })} />
           </Field>
           <Field label="هامش الربح المستهدف (%)">
             <input type="number" className={inputCls} value={db.overheadSettings.targetMarginPct}
-              onChange={(e) => update((d) => { d.overheadSettings = { ...d.overheadSettings, targetMarginPct: Number(e.target.value) || 0 }; return d; })} />
+              onChange={(e) => update((d) => { d.overheadSettings = { ...d.overheadSettings, targetMarginPct: Number(e.target.value) || 0 }; recomputeAutoPricedServices(d); return d; })} />
           </Field>
         </div>
         <p className="text-xs text-slate-500 mb-3">مصاريف {monthKey} الثابتة: <b>{fmt(monthOverhead)}</b> ÷ {db.overheadSettings.expectedCases} حالة متوقعة = <b>{fmt(Math.round(overheadPerCase))}</b> نصيب كل حالة من المصاريف الثابتة</p>
@@ -1758,7 +1841,7 @@ function Settings({ db, update, setModal }) {
           db.services.map((s) => (
             <Card key={s.id} className="p-3 flex items-center gap-3">
               <div className="flex-1 min-w-0">
-                <p className="font-semibold truncate">{s.name} {!s.active && <span className="text-[10px] bg-slate-100 text-slate-400 rounded-full px-2 py-0.5">معطّلة</span>}</p>
+                <p className="font-semibold truncate">{s.name} {!s.active && <span className="text-[10px] bg-slate-100 text-slate-400 rounded-full px-2 py-0.5">معطّلة</span>} {s.autoPricing && <span className="text-[10px] bg-violet-50 text-violet-700 rounded-full px-2 py-0.5">💡 تسعير تلقائي</span>}</p>
                 <p className="text-xs text-slate-500">{fmt(s.price)} · {s.duration} دقيقة · {db.serviceRecipe.filter((r) => r.serviceId === s.id).length} مستهلك مرتبط</p>
               </div>
               <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "serviceRecipe", data: s })}>🧪 المستهلكات</Btn>
@@ -1782,19 +1865,22 @@ function Settings({ db, update, setModal }) {
       </div>
       <div className="space-y-2">
         {db.suppliers.length === 0 ? <Card className="p-3"><Empty text="لا يوجد موردين مسجلين" /></Card> : (
-          db.suppliers.map((s) => (
+          db.suppliers.map((s) => {
+            const bal = supplierBalance(db, s.id);
+            return (
             <Card key={s.id} className="p-3 flex items-center gap-3">
               <div className="flex-1 min-w-0">
-                <p className="font-semibold truncate">{s.name}</p>
+                <p className="font-semibold truncate">{s.name} {bal.owed > 0 && <span className="text-[10px] bg-rose-50 text-rose-700 rounded-full px-2 py-0.5">دين: {fmt(bal.owed)}</span>}</p>
                 <p className="text-xs text-slate-500">{s.contact || "—"} {s.phone && `· ${s.phone}`}</p>
               </div>
+              <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "supplierStatement", data: s })}>💳 كشف حساب</Btn>
               <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "supplier", data: { edit: s } })}>تعديل</Btn>
               <Btn size="sm" tone="rose" onClick={() => {
                 if (!window.confirm(`حذف المورد "${s.name}"؟`)) return;
                 update((d) => { d.suppliers = d.suppliers.filter((x) => x.id !== s.id); return d; }, "حذف مورد: " + s.name);
               }}>حذف</Btn>
             </Card>
-          ))
+          );})
         )}
       </div>
 
@@ -1837,7 +1923,7 @@ function Settings({ db, update, setModal }) {
               </div>
               <Btn size="sm" tone="rose" onClick={() => {
                 if (!window.confirm("حذف هذا المصروف؟")) return;
-                update((d) => { d.overheadCosts = d.overheadCosts.filter((x) => x.id !== c.id); return d; }, "حذف مصروف ثابت: " + c.month);
+                update((d) => { d.overheadCosts = d.overheadCosts.filter((x) => x.id !== c.id); recomputeAutoPricedServices(d); return d; }, "حذف مصروف ثابت: " + c.month);
               }}>حذف</Btn>
             </Card>
           ))
@@ -1982,6 +2068,7 @@ function StockMoveModal({ modal, setModal, audit, db }) {
   const [supplierId, setSupplierId] = useState("");
   const [unitCost, setUnitCost] = useState(item.cost || "");
   const [logExpense, setLogExpense] = useState(true);
+  const [paidNow, setPaidNow] = useState(true);
   const close = () => setModal(null);
   const n = Math.max(1, Number(qty) || 1);
   const newQty = Math.max(0, item.qty + (isOut ? -n : n));
@@ -2005,7 +2092,19 @@ function StockMoveModal({ modal, setModal, audit, db }) {
             <Field label={"تكلفة الوحدة (ج.م) — بتتحدث بيها تكلفة الصنف"}>
               <input type="number" step="0.01" className={inputCls} value={unitCost} onChange={(e) => setUnitCost(e.target.value)} />
             </Field>
-            {cost > 0 && (
+            {cost > 0 && supplierId && (
+              <div className="space-y-1.5">
+                <label className="flex items-center gap-2 text-xs bg-emerald-50 border border-emerald-200 rounded-xl p-2.5 cursor-pointer">
+                  <input type="radio" name="paystatus" checked={paidNow} onChange={() => setPaidNow(true)} />
+                  <span>مدفوع الآن نقدًا — يتسجل {fmt(purchaseTotal)} كمصروف "مخزن" فورًا</span>
+                </label>
+                <label className="flex items-center gap-2 text-xs bg-amber-50 border border-amber-200 rounded-xl p-2.5 cursor-pointer">
+                  <input type="radio" name="paystatus" checked={!paidNow} onChange={() => setPaidNow(false)} />
+                  <span>على الحساب (دين على العيادة) — هيتسجل كمصروف وقت السداد فعليًا من كشف حساب المورد</span>
+                </label>
+              </div>
+            )}
+            {cost > 0 && !supplierId && (
               <label className="flex items-center gap-2 text-xs bg-slate-50 rounded-xl p-2.5 cursor-pointer">
                 <input type="checkbox" checked={logExpense} onChange={(e) => setLogExpense(e.target.checked)} />
                 <span>سجّل {fmt(purchaseTotal)} تلقائيًا كمصروف "مخزن"</span>
@@ -2027,13 +2126,21 @@ function StockMoveModal({ modal, setModal, audit, db }) {
             x.qty = newQty;
             if (!isOut && cost > 0) {
               x.cost = cost;
-              if (logExpense) {
+              if (supplierId) {
+                const invId = uid();
+                d.purchaseInvoices.push({ id: invId, supplierId, date: todayStr(), total: purchaseTotal, paidAmount: paidNow ? purchaseTotal : 0, notes: `${item.name} × ${n}` });
+                if (paidNow) {
+                  d.supplierPayments.push({ id: uid(), supplierId, invoiceId: invId, amount: purchaseTotal, date: todayStr(), notes: "" });
+                  d.expenses.push({ id: uid(), date: todayStr(), item: `شراء ${item.name} من ${supplierName}`, category: "مخزن", amount: purchaseTotal });
+                }
+              } else if (logExpense) {
                 d.expenses.push({
                   id: uid(), date: todayStr(),
-                  item: `شراء ${item.name}${supplierName ? " من " + supplierName : ""}`,
+                  item: `شراء ${item.name}`,
                   category: "مخزن", amount: purchaseTotal,
                 });
               }
+              recomputeAutoPricedServices(d);
             }
             return d;
           }, { area: "المخزن", act: isOut ? "صرف كمية" : "إضافة كمية", item: item.name,
@@ -2239,6 +2346,14 @@ function Modals({ modal, setModal, db, update, h, audit }) {
     const autoContract = f.contractId !== undefined ? f.contractId : (patient?.contractId || "");
     const contract = db.contracts.find((c) => c.id === autoContract);
     const split = contractSplit(Number(f.price || 0), contract);
+    const matchedService = db.services.find((s) => s.name === (f.service || "").trim());
+    const discountLimitPct = h.isStaff ? ((h.myEmp && h.myEmp.perms && h.myEmp.perms.discountLimitPct) ?? 10) : Infinity;
+    const enteredPrice = Number(f.price || 0);
+    const discountPct = matchedService && matchedService.price > 0 && enteredPrice < matchedService.price
+      ? Math.round((1 - enteredPrice / matchedService.price) * 100) : 0;
+    const overDiscount = discountPct > discountLimitPct;
+    const overheadPerCase = monthlyOverheadPerCase(db, todayStr().slice(0, 7));
+    const costInfo = matchedService && enteredPrice > 0 ? computeServiceCost(db, { ...matchedService, price: enteredPrice }, overheadPerCase) : null;
     return (
       <Modal title="حجز موعد جديد" onClose={close}>
         <div className="space-y-3">
@@ -2290,9 +2405,21 @@ function Modals({ modal, setModal, db, update, h, audit }) {
               <p>يدفع المريض: <b>{fmt(split.patientShare)}</b> · على الجهة: <b>{fmt(split.entityShare)}</b></p>
             </div>
           )}
+          {discountPct > 0 && (
+            <p className={`text-xs rounded-xl p-2.5 border ${overDiscount ? "bg-rose-50 border-rose-200 text-rose-700" : "bg-slate-50 border-slate-200 text-slate-600"}`}>
+              خصمك عن سعر الخدمة الأساسي ({fmt(matchedService.price)}): <b>{discountPct}%</b>
+              {overDiscount && <> — 🚨 أكبر من الحد المسموح لك ({discountLimitPct}%)</>}
+            </p>
+          )}
+          {costInfo && costInfo.margin < 0 && (
+            <p className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-xl p-2.5">
+              🚨 السعر المدخل أقل من التكلفة الحقيقية للخدمة ({fmt(Math.round(costInfo.totalCost))}) — خسارة {fmt(Math.round(-costInfo.margin))}.
+            </p>
+          )}
           <Btn className="w-full" onClick={() => {
             const doctorId = f.doctorId || (h.isOwner ? "" : h.myDocId);
             if (!f.patientId || !doctorId || !f.time) return;
+            if (overDiscount) { alert(`خصمك ${discountPct}% أكبر من الحد المسموح لك (${discountLimitPct}%) — راجع صاحب العيادة.`); return; }
             update((d) => {
               d.appointments.push({
                 id: uid(), patientId: f.patientId, doctorId, date: f.date || modal.data.date, time: f.time,
@@ -2606,20 +2733,34 @@ function Modals({ modal, setModal, db, update, h, audit }) {
   }
 
   if (modal.type === "service") {
+    const autoPricing = f.autoPricing !== undefined ? f.autoPricing : !!(edit && edit.autoPricing);
+    const overheadPerCase = monthlyOverheadPerCase(db, todayStr().slice(0, 7));
+    const costPreview = edit ? computeServiceCost(db, { ...edit, price: Number(f.price || edit.price) || 0 }, overheadPerCase) : null;
     return (
       <Modal title={edit ? "تعديل خدمة" : "إضافة خدمة"} onClose={close}>
         <div className="space-y-3">
           <Field label="اسم الخدمة"><input className={inputCls} placeholder="مثال: كشف، حشو، جلسة ليزر" value={f.name || ""} onChange={set("name")} /></Field>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="السعر (ج.م)"><input type="number" className={inputCls} value={f.price || ""} onChange={set("price")} /></Field>
+            <Field label="السعر (ج.م)"><input type="number" className={inputCls} value={f.price || ""} disabled={autoPricing} onChange={set("price")} /></Field>
             <Field label="المدة (دقيقة)"><input type="number" className={inputCls} value={f.duration || 30} onChange={set("duration")} /></Field>
           </div>
+          {costPreview && costPreview.margin < 0 && (
+            <p className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-xl p-2.5">
+              🚨 السعر الحالي ({fmt(Number(f.price || edit.price) || 0)}) أقل من التكلفة الحقيقية ({fmt(Math.round(costPreview.totalCost))}) — خسارة {fmt(Math.round(-costPreview.margin))} في كل حالة.
+            </p>
+          )}
           <Field label="التخصص (اختياري)">
             <select className={inputCls} value={f.specialtyId || ""} onChange={set("specialtyId")}>
               <option value="">— بدون تحديد —</option>
               {db.specialties.filter((s) => s.active).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
           </Field>
+          {edit && (
+            <label className="flex items-center gap-2 text-xs bg-violet-50 border border-violet-200 rounded-xl p-2.5 cursor-pointer">
+              <input type="checkbox" checked={autoPricing} onChange={(e) => setF({ ...f, autoPricing: e.target.checked })} />
+              <span>💡 تسعير تلقائي — السعر يتحدث لوحده لما تتغير تكلفة المستهلكات، بحيث يفضل محافظ على هامش الربح المستهدف ({db.overheadSettings.targetMarginPct}%)</span>
+            </label>
+          )}
           {edit && (
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={f.active !== false} onChange={(e) => setF({ ...f, active: e.target.checked })} />
@@ -2631,10 +2772,11 @@ function Modals({ modal, setModal, db, update, h, audit }) {
             update((d) => {
               if (edit) {
                 const x = d.services.find((y) => y.id === edit.id);
-                x.name = f.name.trim(); x.price = Number(f.price) || 0; x.duration = Number(f.duration) || 30; x.specialtyId = f.specialtyId || ""; x.active = f.active !== false;
+                x.name = f.name.trim(); x.price = Number(f.price) || 0; x.duration = Number(f.duration) || 30; x.specialtyId = f.specialtyId || ""; x.active = f.active !== false; x.autoPricing = autoPricing;
               } else {
-                d.services.push({ id: uid(), name: f.name.trim(), price: Number(f.price) || 0, duration: Number(f.duration) || 30, specialtyId: f.specialtyId || "", active: true });
+                d.services.push({ id: uid(), name: f.name.trim(), price: Number(f.price) || 0, duration: Number(f.duration) || 30, specialtyId: f.specialtyId || "", active: true, autoPricing: false });
               }
+              recomputeAutoPricedServices(d);
               return d;
             }, edit ? `تعديل خدمة: ${f.name}` : `إضافة خدمة: ${f.name}`);
             close();
@@ -2658,18 +2800,19 @@ function Modals({ modal, setModal, db, update, h, audit }) {
                 return (
                   <div key={r.id} className="flex items-center justify-between bg-slate-50 rounded-lg p-2 text-xs">
                     <span>{item ? item.name : "صنف محذوف"} — {r.qty} {item?.unit || ""} {r.wastagePct > 0 && `(+${r.wastagePct}% هدر)`}</span>
-                    <button onClick={() => update((d) => { d.serviceRecipe = d.serviceRecipe.filter((x) => x.id !== r.id); return d; }, `إزالة مستهلك من خدمة: ${service.name}`)} className="text-rose-500 hover:text-rose-700">✕</button>
+                    <button onClick={() => update((d) => { d.serviceRecipe = d.serviceRecipe.filter((x) => x.id !== r.id); recomputeAutoPricedServices(d); return d; }, `إزالة مستهلك من خدمة: ${service.name}`)} className="text-rose-500 hover:text-rose-700">✕</button>
                   </div>
                 );
               })}
             </div>
           )}
           <div className="border-t border-slate-100 pt-3 space-y-2">
-            <Field label="إضافة صنف">
+            <Field label="إضافة صنف — من قائمة المخزن العامة">
               <select className={inputCls} value={f.itemId || ""} onChange={set("itemId")}>
                 <option value="">— اختر صنف —</option>
-                {db.inventory.map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
+                {db.inventory.filter((i) => i.itemType !== "equipment").map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
               </select>
+              {db.inventory.length === 0 && <p className="text-[11px] text-amber-600 mt-1">لا توجد أصناف في المخزن بعد — أضفها من "المخزن" أولاً، وبعدها اختارها هنا.</p>}
             </Field>
             <div className="grid grid-cols-2 gap-3">
               <Field label="الكمية لكل خدمة"><input type="number" step="0.01" className={inputCls} value={f.qty || ""} onChange={set("qty")} /></Field>
@@ -2679,6 +2822,7 @@ function Modals({ modal, setModal, db, update, h, audit }) {
               if (!f.itemId || !f.qty) return;
               update((d) => {
                 d.serviceRecipe.push({ id: uid(), serviceId: service.id, itemId: f.itemId, qty: Number(f.qty), wastagePct: Number(f.wastagePct) || 0 });
+                recomputeAutoPricedServices(d);
                 return d;
               }, `ربط مستهلك بخدمة: ${service.name}`);
               setF({});
@@ -2710,6 +2854,49 @@ function Modals({ modal, setModal, db, update, h, audit }) {
             }, edit ? `تعديل مورد: ${f.name}` : `إضافة مورد: ${f.name}`);
             close();
           }}>حفظ</Btn>
+        </div>
+      </Modal>
+    );
+  }
+
+  if (modal.type === "supplierStatement") {
+    const supplier = modal.data;
+    const invoices = [...db.purchaseInvoices].filter((i) => i.supplierId === supplier.id).sort((a, b) => b.date.localeCompare(a.date));
+    const bal = supplierBalance(db, supplier.id);
+    return (
+      <Modal title={`كشف حساب — ${supplier.name}`} onClose={close}>
+        <div className="space-y-3">
+          <div className="grid grid-cols-3 gap-2 text-center">
+            <div className="bg-slate-50 rounded-xl p-2.5"><p className="text-[10px] text-slate-500">إجمالي الفواتير</p><p className="font-bold text-sm">{fmt(bal.total)}</p></div>
+            <div className="bg-emerald-50 rounded-xl p-2.5"><p className="text-[10px] text-emerald-600">المدفوع</p><p className="font-bold text-sm text-emerald-700">{fmt(bal.paid)}</p></div>
+            <div className="bg-rose-50 rounded-xl p-2.5"><p className="text-[10px] text-rose-600">المتبقي (دين)</p><p className="font-bold text-sm text-rose-700">{fmt(bal.owed)}</p></div>
+          </div>
+          {bal.owed > 0 && (
+            <div className="border-t border-slate-100 pt-3 space-y-2">
+              <Field label="تسجيل دفعة سداد للدين">
+                <input type="number" className={inputCls} placeholder={`حتى ${bal.owed}`} value={f.payAmount || ""} onChange={set("payAmount")} />
+              </Field>
+              <Btn className="w-full" tone="emerald" onClick={() => {
+                const amount = Math.min(Number(f.payAmount || 0), bal.owed);
+                if (amount <= 0) return;
+                update((d) => { paySupplierDebt(d, supplier.id, amount, supplier.name); return d; }, `سداد ${fmt(amount)} لمورد: ${supplier.name}`);
+                setF({});
+              }}>تأكيد السداد</Btn>
+            </div>
+          )}
+          <div className="border-t border-slate-100 pt-3">
+            <h3 className="font-bold text-teal-900 text-sm mb-2">الفواتير</h3>
+            {invoices.length === 0 ? <Empty text="لا توجد فواتير لهذا المورد بعد — بتتسجل تلقائيًا لما تضيف مخزون منه" /> : (
+              <div className="space-y-1.5">
+                {invoices.map((i) => (
+                  <div key={i.id} className={`flex justify-between items-center rounded-lg p-2 text-xs ${i.paidAmount >= i.total ? "bg-emerald-50" : "bg-amber-50"}`}>
+                    <span>{i.date} {i.notes && `— ${i.notes}`}</span>
+                    <span className="font-semibold">{fmt(i.paidAmount)} / {fmt(i.total)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </Modal>
     );
@@ -2756,6 +2943,7 @@ function Modals({ modal, setModal, db, update, h, audit }) {
             if (!f.categoryId || !f.amount) return;
             update((d) => {
               d.overheadCosts.push({ id: uid(), categoryId: f.categoryId, month: f.month || defaultMonth, amount: Number(f.amount), notes: f.notes || "" });
+              recomputeAutoPricedServices(d);
               return d;
             }, `تسجيل مصروف ثابت: ${db.overheadCategories.find((c) => c.id === f.categoryId)?.name || ""} — ${fmt(Number(f.amount))}`);
             close();
@@ -2886,15 +3074,22 @@ function Modals({ modal, setModal, db, update, h, audit }) {
               ))}
             </div>
           </Field>
+          <Field label="أقصى نسبة خصم يقدر يمنحها الموظف على سعر الخدمة (%)">
+            <input type="number" className={inputCls}
+              value={(f.perms || {}).discountLimitPct ?? ((f.role || "").indexOf("مدير") >= 0 ? 25 : 10)}
+              onChange={(e) => setF({ ...f, perms: { ...(f.perms || {}), discountLimitPct: Number(e.target.value) || 0 } })} />
+            <p className="text-[11px] text-slate-400 mt-1">افتراضيًا 10% للموظفين و25% للمديرين — صاحب العيادة وحده بدون حد.</p>
+          </Field>
           <Btn className="w-full" onClick={() => {
             if (!f.name) return;
+            const discountLimitPct = (f.perms || {}).discountLimitPct ?? ((f.role || "").indexOf("مدير") >= 0 ? 25 : 10);
             update((d) => {
               if (edit) {
                 const x = d.employees.find((y) => y.id === edit.id);
                 x.name = f.name; x.role = f.role || ""; x.salary = Number(f.salary || 0);
-                x.email = f.email || ""; x.perms = f.perms || {};
+                x.email = f.email || ""; x.perms = { ...(f.perms || {}), discountLimitPct };
               } else {
-                d.employees.push({ id: uid(), name: f.name, role: f.role || "", salary: Number(f.salary || 0), email: f.email || "", perms: f.perms || {} });
+                d.employees.push({ id: uid(), name: f.name, role: f.role || "", salary: Number(f.salary || 0), email: f.email || "", perms: { ...(f.perms || {}), discountLimitPct } });
               }
               return d;
             }, edit ? `تعديل بيانات الموظف: ${f.name}` : `إضافة موظف: ${f.name}`);
@@ -2938,14 +3133,21 @@ function Modals({ modal, setModal, db, update, h, audit }) {
             <Field label="الحد الأدنى"><input type="number" className={inputCls} value={f.min || ""} onChange={set("min")} /></Field>
           </div>
           <Field label="تكلفة الوحدة (ج.م) — لحساب تكلفة الخدمات"><input type="number" step="0.01" className={inputCls} value={f.cost || ""} onChange={set("cost")} /></Field>
+          <Field label="نوع الصنف">
+            <select className={inputCls} value={f.itemType || "consumable"} onChange={set("itemType")}>
+              <option value="consumable">مستهلك (بيتحسب في تكلفة الخدمات)</option>
+              <option value="equipment">معدة / أداة (مش بيتستهلك لكل حالة)</option>
+            </select>
+          </Field>
           <Btn className="w-full" onClick={() => {
             if (!f.name) return;
             update((d) => {
               if (edit) {
                 const x = d.inventory.find((y) => y.id === edit.id);
-                x.name = f.name; x.unit = f.unit || "وحدة"; x.qty = Number(f.qty || 0); x.min = Number(f.min || 0); x.cost = Number(f.cost || 0);
+                x.name = f.name; x.unit = f.unit || "وحدة"; x.qty = Number(f.qty || 0); x.min = Number(f.min || 0); x.cost = Number(f.cost || 0); x.itemType = f.itemType || "consumable";
+                recomputeAutoPricedServices(d);
               } else {
-                d.inventory.push({ id: uid(), name: f.name, unit: f.unit || "وحدة", qty: Number(f.qty || 0), min: Number(f.min || 0), cost: Number(f.cost || 0) });
+                d.inventory.push({ id: uid(), name: f.name, unit: f.unit || "وحدة", qty: Number(f.qty || 0), min: Number(f.min || 0), cost: Number(f.cost || 0), itemType: f.itemType || "consumable" });
               }
               return d;
             }, edit ? `تعديل صنف: ${f.name}` : `إضافة صنف للمخزن: ${f.name}`);
