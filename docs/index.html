@@ -160,8 +160,8 @@ const COLS = {
   },
   payments: {
     table: "payments",
-    from: (r) => ({ id: r.id, patientId: es(r.patient_id), doctorId: es(r.doctor_id), apptId: es(r.appointment_id), amount: num(r.amount), source: es(r.source) || "مريض", note: es(r.note), date: r.date, branchId: es(r.branch_id) }),
-    to: (o) => ({ id: o.id, clinic_id: CID, patient_id: nn(o.patientId), doctor_id: nn(o.doctorId), appointment_id: nn(o.apptId), amount: o.amount, source: o.source || "مريض", note: o.note || "", date: o.date, branch_id: nn(o.branchId) }),
+    from: (r) => ({ id: r.id, patientId: es(r.patient_id), doctorId: es(r.doctor_id), apptId: es(r.appointment_id), amount: num(r.amount), source: es(r.source) || "مريض", note: es(r.note), date: r.date, branchId: es(r.branch_id), method: es(r.method) || "كاش", currency: es(r.currency) || "EGP", fxRate: r.fx_rate == null ? 1 : num(r.fx_rate), foreignAmount: r.foreign_amount == null ? null : num(r.foreign_amount) }),
+    to: (o) => ({ id: o.id, clinic_id: CID, patient_id: nn(o.patientId), doctor_id: nn(o.doctorId), appointment_id: nn(o.apptId), amount: o.amount, source: o.source || "مريض", note: o.note || "", date: o.date, branch_id: nn(o.branchId), method: o.method || "كاش", currency: o.currency || "EGP", fx_rate: o.fxRate || 1, foreign_amount: o.foreignAmount ?? null }),
   },
   expenses: {
     table: "expenses",
@@ -884,6 +884,10 @@ const fmt = (n) => Number(n || 0).toLocaleString("ar-EG") + " ج.م";
 
 /* نقاط الولاء: 5 نقاط لكل 100 ج.م مدفوعة · النقطة = 1 ج.م عند الاستبدال */
 const POINTS_PER_100 = 5;
+
+/* طرق الدفع المتاحة عند تسجيل تحصيلة، والعملات الشائعة لو المريض دفع بعملة غير الجنيه */
+const PAYMENT_METHODS = ["كاش", "فيزا", "انستاباي", "محفظة إلكترونية", "تحويل بنكي", "أخرى"];
+const CURRENCIES = ["EGP", "USD", "EUR", "SAR", "AED", "GBP"];
 
 const waLink = (phone, msg) => {
   let p = (phone || "").replace(/[^0-9]/g, "");
@@ -1789,21 +1793,34 @@ function Finance({ db, h, setModal, update }) {
         </div>
       )}
       {sub === "in" && (
-        <Card className="p-4">
-          {db.payments.length === 0 ? <Empty text="لا توجد تحصيلات" /> : (
-            <div className="space-y-2">
-              {[...db.payments].reverse().map((p) => (
-                <div key={p.id} className="flex justify-between items-center border-b border-slate-100 pb-2 text-sm">
-                  <div>
-                    <p className="font-semibold">{p.source === "جهة" ? `📜 ${p.note}` : h.pName(p.patientId)}</p>
-                    <p className="text-xs text-slate-500">{p.date} · {h.dName(p.doctorId)}</p>
-                  </div>
-                  <span className="font-bold text-emerald-700">{fmt(p.amount)}</span>
-                </div>
-              ))}
-            </div>
+        <>
+          {db.payments.length > 0 && (
+            <Card className="p-4">
+              <p className="text-xs font-bold text-slate-500 mb-2">التحصيلات حسب طريقة الدفع</p>
+              <div className="flex flex-wrap gap-2">
+                {PAYMENT_METHODS.filter((m) => db.payments.some((p) => (p.method || "كاش") === m)).map((m) => {
+                  const total = db.payments.filter((p) => (p.method || "كاش") === m).reduce((s, p) => s + p.amount, 0);
+                  return <span key={m} className="text-xs bg-brand-50 text-brand-700 rounded-lg px-2.5 py-1.5 font-semibold">{m}: {fmt(total)}</span>;
+                })}
+              </div>
+            </Card>
           )}
-        </Card>
+          <Card className="p-4">
+            {db.payments.length === 0 ? <Empty text="لا توجد تحصيلات" /> : (
+              <div className="space-y-2">
+                {[...db.payments].reverse().map((p) => (
+                  <div key={p.id} className="flex justify-between items-center border-b border-slate-100 pb-2 text-sm">
+                    <div>
+                      <p className="font-semibold">{p.source === "جهة" ? `📜 ${p.note}` : h.pName(p.patientId)}</p>
+                      <p className="text-xs text-slate-500">{p.date} · {h.dName(p.doctorId)} · {p.method || "كاش"}{p.currency && p.currency !== "EGP" ? ` (${p.foreignAmount} ${p.currency})` : ""}</p>
+                    </div>
+                    <span className="font-bold text-emerald-700">{fmt(p.amount)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+        </>
       )}
       {sub === "out" && (
         <>
@@ -2007,7 +2024,7 @@ function Contracts({ db, h, update, setModal }) {
     update((d) => {
       const appt = d.appointments.find((x) => x.id === a.id);
       appt.entityPaid = true;
-      d.payments.push({ id: uid(), date: todayStr(), patientId: a.patientId, doctorId: a.doctorId, apptId: a.id, amount: a.entityShare, note: h.cName(a.contractId), source: "جهة", branchId: a.branchId });
+      d.payments.push({ id: uid(), date: todayStr(), patientId: a.patientId, doctorId: a.doctorId, apptId: a.id, amount: a.entityShare, note: h.cName(a.contractId), source: "جهة", branchId: a.branchId, method: "تحويل بنكي" });
       return d;
     }, `تحصيل ${fmt(a.entityShare)} من ${h.cName(a.contractId)}`);
 
@@ -3632,6 +3649,13 @@ function Modals({ modal, setModal, db, update, h, audit }) {
     const usePts = f.usePts === "1";
     const redeem = usePts ? Math.min(p.points || 0, due) : 0;
     const cashDue = due - redeem;
+    const method = f.method || "كاش";
+    const currency = f.currency || "EGP";
+    const isForeign = currency !== "EGP";
+    const fxRate = Number(f.fxRate) || 1;
+    const foreignAmount = f.foreignAmount ?? "";
+    const egpFromForeign = Math.round((Number(foreignAmount) || 0) * fxRate);
+    const amount = isForeign ? egpFromForeign : Number(f.amount ?? cashDue);
     return (
       <Modal title={`تحصيل من ${p.name}`} onClose={close}>
         <div className="space-y-3">
@@ -3642,12 +3666,41 @@ function Modals({ modal, setModal, db, update, h, audit }) {
               <span>⭐ استبدال نقاط الولاء ({p.points} نقطة = خصم حتى {fmt(Math.min(p.points, due))})</span>
             </label>
           )}
-          {usePts && <p className="text-xs text-emerald-700">خصم النقاط: −{fmt(redeem)} · المطلوب نقداً: <b>{fmt(cashDue)}</b></p>}
-          <Field label="المبلغ المحصَّل نقداً">
-            <input type="number" className={inputCls} value={f.amount ?? cashDue} onChange={set("amount")} />
-          </Field>
+          {usePts && <p className="text-xs text-emerald-700">خصم النقاط: −{fmt(redeem)} · المطلوب: <b>{fmt(cashDue)}</b></p>}
+
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="طريقة الدفع">
+              <select className={inputCls} value={method} onChange={set("method")}>
+                {PAYMENT_METHODS.map((m) => <option key={m} value={m}>{m}</option>)}
+              </select>
+            </Field>
+            <Field label="العملة">
+              <select className={inputCls} value={currency} onChange={set("currency")}>
+                {CURRENCIES.map((c) => <option key={c} value={c}>{c === "EGP" ? "جنيه مصري" : c}</option>)}
+              </select>
+            </Field>
+          </div>
+
+          {isForeign ? (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label={`المبلغ بال${currency}`}>
+                  <input type="number" className={inputCls} value={foreignAmount} onChange={set("foreignAmount")} />
+                </Field>
+                <Field label="سعر الصرف (١ = كام جنيه)">
+                  <input type="number" step="0.01" className={inputCls} value={f.fxRate ?? 1} onChange={set("fxRate")} />
+                </Field>
+              </div>
+              <p className="text-xs text-slate-500">يعادل: <b className="text-emerald-700">{fmt(Math.min(egpFromForeign, cashDue))}</b>{egpFromForeign > cashDue && " (هيتقفل عند المتبقي)"}</p>
+            </>
+          ) : (
+            <Field label="المبلغ المحصَّل">
+              <input type="number" className={inputCls} value={f.amount ?? cashDue} onChange={set("amount")} />
+            </Field>
+          )}
+
           <Btn className="w-full" tone="emerald" onClick={() => {
-            const cash = Math.min(Number(f.amount ?? cashDue), cashDue);
+            const cash = Math.min(Math.max(0, amount), cashDue);
             if (cash < 0 || (cash === 0 && redeem === 0)) return;
             const earned = Math.floor(cash / 100) * POINTS_PER_100;
             update((d) => {
@@ -3656,12 +3709,16 @@ function Modals({ modal, setModal, db, update, h, audit }) {
               const pt = d.patients.find((x) => x.id === a.patientId);
               pt.points = (pt.points || 0) - redeem + earned;
               if (cash > 0)
-                d.payments.push({ id: uid(), date: todayStr(), patientId: a.patientId, doctorId: a.doctorId, apptId: a.id, amount: cash, note: a.service, source: "مريض", branchId: a.branchId });
+                d.payments.push({
+                  id: uid(), date: todayStr(), patientId: a.patientId, doctorId: a.doctorId, apptId: a.id,
+                  amount: cash, note: a.service, source: "مريض", branchId: a.branchId,
+                  method, currency, fxRate: isForeign ? fxRate : 1, foreignAmount: isForeign ? (Number(foreignAmount) || 0) : null,
+                });
               return d;
-            }, `تحصيل ${fmt(cash)} من ${p.name}${redeem ? ` + استبدال ${redeem} نقطة` : ""}${earned ? ` (كسب ${earned} نقطة)` : ""}`);
+            }, `تحصيل ${fmt(cash)} من ${p.name} (${method}${isForeign ? ` — ${foreignAmount} ${currency}` : ""})${redeem ? ` + استبدال ${redeem} نقطة` : ""}${earned ? ` (كسب ${earned} نقطة)` : ""}`);
             close();
           }}>تأكيد التحصيل</Btn>
-          <p className="text-[10px] text-slate-400">يكسب المريض {POINTS_PER_100} نقاط تلقائياً عن كل 100 ج.م مدفوعة نقداً.</p>
+          <p className="text-[10px] text-slate-400">يكسب المريض {POINTS_PER_100} نقاط تلقائياً عن كل 100 ج.م مدفوعة.</p>
         </div>
       </Modal>
     );
