@@ -160,18 +160,18 @@ const COLS = {
   },
   payments: {
     table: "payments",
-    from: (r) => ({ id: r.id, patientId: es(r.patient_id), doctorId: es(r.doctor_id), apptId: es(r.appointment_id), amount: num(r.amount), source: es(r.source) || "مريض", note: es(r.note), date: r.date }),
-    to: (o) => ({ id: o.id, clinic_id: CID, patient_id: nn(o.patientId), doctor_id: nn(o.doctorId), appointment_id: nn(o.apptId), amount: o.amount, source: o.source || "مريض", note: o.note || "", date: o.date }),
+    from: (r) => ({ id: r.id, patientId: es(r.patient_id), doctorId: es(r.doctor_id), apptId: es(r.appointment_id), amount: num(r.amount), source: es(r.source) || "مريض", note: es(r.note), date: r.date, branchId: es(r.branch_id) }),
+    to: (o) => ({ id: o.id, clinic_id: CID, patient_id: nn(o.patientId), doctor_id: nn(o.doctorId), appointment_id: nn(o.apptId), amount: o.amount, source: o.source || "مريض", note: o.note || "", date: o.date, branch_id: nn(o.branchId) }),
   },
   expenses: {
     table: "expenses",
-    from: (r) => ({ id: r.id, item: r.item, category: es(r.category) || "عام", amount: num(r.amount), date: r.date }),
-    to: (o) => ({ id: o.id, clinic_id: CID, item: o.item, category: o.category || "عام", amount: o.amount, date: o.date }),
+    from: (r) => ({ id: r.id, item: r.item, category: es(r.category) || "عام", amount: num(r.amount), date: r.date, branchId: es(r.branch_id) }),
+    to: (o) => ({ id: o.id, clinic_id: CID, item: o.item, category: o.category || "عام", amount: o.amount, date: o.date, branch_id: nn(o.branchId) }),
   },
   inventory: {
     table: "inventory_items",
-    from: (r) => ({ id: r.id, name: r.name, unit: es(r.unit) || "وحدة", qty: num(r.qty), min: num(r.min_qty), cost: num(r.default_unit_cost), itemType: es(r.item_type) || "consumable", specialtyId: es(r.specialty_id) }),
-    to: (o) => ({ id: o.id, clinic_id: CID, name: o.name, unit: o.unit || "وحدة", qty: o.qty || 0, min_qty: o.min || 0, default_unit_cost: o.cost || 0, item_type: o.itemType || "consumable", specialty_id: nn(o.specialtyId) }),
+    from: (r) => ({ id: r.id, name: r.name, unit: es(r.unit) || "وحدة", qty: num(r.qty), min: num(r.min_qty), cost: num(r.default_unit_cost), itemType: es(r.item_type) || "consumable", specialtyId: es(r.specialty_id), branchId: es(r.branch_id) }),
+    to: (o) => ({ id: o.id, clinic_id: CID, name: o.name, unit: o.unit || "وحدة", qty: o.qty || 0, min_qty: o.min || 0, default_unit_cost: o.cost || 0, item_type: o.itemType || "consumable", specialty_id: nn(o.specialtyId), branch_id: nn(o.branchId) }),
   },
   services: {
     table: "clinic_services",
@@ -671,6 +671,16 @@ const contractSplit = (price, contract) => {
   return { net, patientShare, entityShare: net - patientShare };
 };
 
+/* حسابات فرع معين: التحصيلات (من دفعات مربوطة بيه صراحةً أو عبر موعد تابع له) − مصاريف مربوطة بيه صراحةً */
+const branchFinance = (db, branchId, fromDate) => {
+  const apptBranchOf = new Map(db.appointments.map((a) => [a.id, a.branchId]));
+  const pays = db.payments.filter((p) => (fromDate ? p.date >= fromDate : true) && (p.branchId ? p.branchId === branchId : apptBranchOf.get(p.apptId) === branchId));
+  const exps = db.expenses.filter((e) => (fromDate ? e.date >= fromDate : true) && e.branchId === branchId);
+  const revenue = pays.reduce((s, p) => s + p.amount, 0);
+  const expenses = exps.reduce((s, e) => s + e.amount, 0);
+  return { revenue, expenses, net: revenue - expenses, payments: pays, expensesList: exps };
+};
+
 /* الفرع الأساسي لعضو (طبيب/موظف) */
 const primaryBranchOf = (db, memberId) => {
   const a = db.branchAssignments.find((x) => x.memberId === memberId && x.isPrimary);
@@ -885,6 +895,7 @@ const Bar = ({ label, value, max, money = true }) => (
 
 const TabIcon = ({ id }) => {
   const p = { width: 15, height: 15, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round" };
+  if (id === "branches") return <svg {...p}><path d="M5 20V9.5L12 5l7 4.5V20" /><path d="M9.5 20v-5.5h5V20" /></svg>;
   if (id === "dash") return <svg {...p}><path d="M4 11 12 4l8 7" /><path d="M6 10v9h5v-6h2v6h5v-9" /></svg>;
   if (id === "appts") return <svg {...p}><rect x="4" y="6" width="16" height="14" rx="3" /><path d="M4 10h16" /><path d="M8 4v4M16 4v4" /></svg>;
   if (id === "patients") return <svg {...p}><circle cx="9" cy="9" r="3" /><path d="M4.3 19c0-3 2.3-5 4.7-5s4.7 2 4.7 5" /><circle cx="17" cy="10.2" r="2.3" /><path d="M15.6 19c.3-2.1 1.6-3.5 3-3.9" /></svg>;
@@ -893,6 +904,7 @@ const TabIcon = ({ id }) => {
   if (id === "contracts") return <svg {...p}><path d="M6 3.5h8l4 4V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z" /><path d="M14 3.5V8h4" /><path d="M8 12h8M8 15.5h8M8 19h5" /></svg>;
   if (id === "lab") return <svg {...p}><path d="M9 3h6" /><path d="M10 3v5.5L5.5 17a2 2 0 0 0 1.8 3h9.4a2 2 0 0 0 1.8-3L14 8.5V3" /><path d="M7.5 14h9" /></svg>;
   if (id === "staff") return <svg {...p}><rect x="3" y="5.5" width="18" height="13" rx="2.5" /><circle cx="8.3" cy="11" r="1.8" /><path d="M6 15.3c.4-1.5 1.4-2.3 2.3-2.3s1.9.8 2.3 2.3" /><path d="M14 9.5h4M14 12.5h4M14 15.5h2.5" /></svg>;
+  if (id === "doctors") return <svg {...p}><circle cx="16.3" cy="15.3" r="2.2" /><path d="M7.5 4v6a4.5 4.5 0 0 0 9 0V4" /><path d="M7.5 4H6M16.5 4H18" /><path d="M16.3 13.1V10.7" /></svg>;
   if (id === "inv") return <svg {...p}><path d="M4 8.2 12 4l8 4.2-8 4.2-8-4.2Z" /><path d="M4 8.2V16l8 4.2 8-4.2V8.2" /><path d="M12 12.4v7.8" /></svg>;
   if (id === "watch") return <svg {...p}><path d="M12 3.5 5 6.2v5.4c0 4.4 2.9 7.8 7 8.9 4.1-1.1 7-4.5 7-8.9V6.2L12 3.5Z" /><path d="M12 9v4" /><circle cx="12" cy="15.3" r="0.5" fill="currentColor" stroke="none" /></svg>;
   if (id === "logs") return <svg {...p}><path d="M8 6.5h11M8 12h11M8 17.5h11" /><circle cx="4" cy="6.5" r="1" fill="currentColor" stroke="none" /><circle cx="4" cy="12" r="1" fill="currentColor" stroke="none" /><circle cx="4" cy="17.5" r="1" fill="currentColor" stroke="none" /></svg>;
@@ -908,6 +920,7 @@ function ClinicApp({ boot }) {
   const [tab, setTab] = useState("dash");
   const [modal, setModal] = useState(null);
   const [patientView, setPatientView] = useState(null);
+  const [branchView, setBranchView] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const member = boot.member;
   const user = member.role === "owner" ? { role: "owner" }
@@ -966,6 +979,7 @@ function ClinicApp({ boot }) {
 
 
   const ownerTabs = [
+    ["branches", "🏢", "الفروع"],
     ["dash", "🏠", "الرئيسية"], ["appts", "📅", "المواعيد"], ["patients", "🧑‍🤝‍🧑", "المرضى"],
     ["finance", "💰", "الماليات"], ["reports", "📊", "التقارير"], ["contracts", "📜", "التعاقدات"],
     ["lab", "🦷", "المعمل"], ["staff", "🕐", "الموظفون"], ["inv", "📦", "المخزن"],
@@ -1040,7 +1054,7 @@ function ClinicApp({ boot }) {
               {tabs.map(([id, , label]) => {
                 const active = tab === id && !patientView;
                 return (
-                  <button key={id} onClick={() => { setTab(id); setPatientView(null); setMenuOpen(false); }}
+                  <button key={id} onClick={() => { setTab(id); setPatientView(null); setBranchView(null); setMenuOpen(false); }}
                     className="w-full flex items-center gap-3 px-3.5 py-3 rounded-xl text-sm text-right transition-colors"
                     style={active ? { background: "#F3E2DC" } : undefined}
                     onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = "#FAF6EE"; }}
@@ -1063,6 +1077,11 @@ function ClinicApp({ boot }) {
           <PatientSheet db={db} h={h} pid={patientView} back={() => setPatientView(null)} setModal={setModal} update={update} audit={audit} />
         ) : (
           <>
+            {tab === "branches" && h.isOwner && (
+              branchView
+                ? <BranchDetail db={db} h={h} branchId={branchView} back={() => setBranchView(null)} update={update} setModal={setModal} audit={audit} />
+                : <Branches db={db} h={h} setModal={setModal} openBranch={setBranchView} />
+            )}
             {tab === "dash" && <Dashboard db={db} h={h} />}
             {tab === "appts" && <Appointments db={db} h={h} update={update} setModal={setModal} />}
             {tab === "patients" && <Patients db={db} h={h} setModal={setModal} openSheet={setPatientView} update={update} />}
@@ -1761,7 +1780,7 @@ function Contracts({ db, h, update, setModal }) {
     update((d) => {
       const appt = d.appointments.find((x) => x.id === a.id);
       appt.entityPaid = true;
-      d.payments.push({ id: uid(), date: todayStr(), patientId: a.patientId, doctorId: a.doctorId, apptId: a.id, amount: a.entityShare, note: h.cName(a.contractId), source: "جهة" });
+      d.payments.push({ id: uid(), date: todayStr(), patientId: a.patientId, doctorId: a.doctorId, apptId: a.id, amount: a.entityShare, note: h.cName(a.contractId), source: "جهة", branchId: a.branchId });
       return d;
     }, `تحصيل ${fmt(a.entityShare)} من ${h.cName(a.contractId)}`);
 
@@ -2010,17 +2029,43 @@ function PayrollActions({ db, update, setModal, h }) {
 }
 
 /* ---------- المخزن ---------- */
-function Inventory({ db, update, setModal, audit, h }) {
+function Inventory({ db, update, setModal, audit, h, fixedBranchId }) {
   const [spec, setSpec] = useState("");
+  const [branchFilter, setBranchFilter] = useState("");
   const adjust = (i, delta) => setModal({ type: "stockMove", data: { item: i, delta } });
   const specName = (id) => db.specialties.find((s) => s.id === id)?.name;
-  const list = db.inventory.filter((i) => !spec || i.specialtyId === spec);
+  const branchName = (id) => db.branches.find((b) => b.id === id)?.name;
+  const byBranch = (i) => {
+    if (fixedBranchId) return i.branchId === fixedBranchId;
+    if (branchFilter === "__central") return !i.branchId;
+    if (branchFilter) return i.branchId === branchFilter;
+    return true;
+  };
+  const bySpec = (i) => (spec === "__general" ? !i.specialtyId : !spec || i.specialtyId === spec);
+  const scoped = db.inventory.filter((i) => bySpec(i) && byBranch(i));
   return (
     <>
       <div className="flex justify-between items-center">
         <h2 className="font-display font-bold text-brand-900">الخامات والمستهلكات</h2>
-        <Btn size="sm" onClick={() => setModal({ type: "item", data: { specialtyId: spec === "__general" ? "" : spec } })}>+ صنف</Btn>
+        <div className="flex gap-1.5">
+          {h.isOwner && !fixedBranchId && db.branches.length > 0 && (
+            <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "stockTransfer" })}>↔ نقل بين الفروع</Btn>
+          )}
+          <Btn size="sm" onClick={() => setModal({ type: "item", data: { specialtyId: spec === "__general" ? "" : spec, branchId: fixedBranchId || (branchFilter === "__central" ? "" : branchFilter) } })}>+ صنف</Btn>
+        </div>
       </div>
+      {!fixedBranchId && db.branches.length > 0 && (
+        <div className="flex gap-1.5 overflow-x-auto pb-1">
+          <button onClick={() => setBranchFilter("")}
+            className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${branchFilter === "" ? "bg-violet-700 text-white" : "bg-white text-slate-600 border border-slate-200"}`}>كل الفروع</button>
+          <button onClick={() => setBranchFilter("__central")}
+            className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${branchFilter === "__central" ? "bg-violet-700 text-white" : "bg-white text-slate-600 border border-slate-200"}`}>مركزي</button>
+          {db.branches.map((b) => (
+            <button key={b.id} onClick={() => setBranchFilter(b.id)}
+              className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${branchFilter === b.id ? "bg-violet-700 text-white" : "bg-white text-slate-600 border border-slate-200"}`}>🏢 {b.name}</button>
+          ))}
+        </div>
+      )}
       {db.specialties.length > 1 && (
         <div className="flex gap-1.5 overflow-x-auto pb-1">
           <button onClick={() => setSpec("")}
@@ -2034,15 +2079,18 @@ function Inventory({ db, update, setModal, audit, h }) {
         </div>
       )}
       <div className="space-y-2">
-        {(spec === "__general" ? db.inventory.filter((i) => !i.specialtyId) : list).length === 0 ? <Card className="p-3"><Empty text="لا توجد أصناف في هذا التصنيف" /></Card> : null}
-        {(spec === "__general" ? db.inventory.filter((i) => !i.specialtyId) : list).map((i) => {
+        {scoped.length === 0 ? <Card className="p-3"><Empty text="لا توجد أصناف في هذا التصنيف" /></Card> : null}
+        {scoped.map((i) => {
           const low = i.qty <= i.min;
           return (
             <Card key={i.id} className={`p-4 flex items-center gap-3 ${low ? "border-rose-200 bg-rose-50/50" : ""}`}>
               <div className="flex-1">
                 <p className="font-semibold">{i.name} {low && <span className="text-xs text-rose-600 font-bold">⚠️</span>}
                   {i.specialtyId ? <span className="text-[10px] bg-brand-50 text-brand-700 rounded-full px-2 py-0.5 mr-1">{specName(i.specialtyId) || "—"}</span>
-                    : <span className="text-[10px] bg-slate-100 text-slate-500 rounded-full px-2 py-0.5 mr-1">عام</span>}</p>
+                    : <span className="text-[10px] bg-slate-100 text-slate-500 rounded-full px-2 py-0.5 mr-1">عام</span>}
+                  {!fixedBranchId && db.branches.length > 0 && (i.branchId
+                    ? <span className="text-[10px] bg-violet-50 text-violet-700 rounded-full px-2 py-0.5 mr-1">🏢 {branchName(i.branchId) || "—"}</span>
+                    : <span className="text-[10px] bg-slate-100 text-slate-500 rounded-full px-2 py-0.5 mr-1">مركزي</span>)}</p>
                 <p className="text-xs text-slate-500">الحد الأدنى: {i.min} {i.unit}{h.isOwner && i.cost > 0 && ` · تكلفة الوحدة: ${fmt(i.cost)}`}</p>
               </div>
               <div className="flex items-center gap-2">
@@ -2062,6 +2110,138 @@ function Inventory({ db, update, setModal, audit, h }) {
           );
         })}
       </div>
+    </>
+  );
+}
+
+/* ---------- الفروع ---------- */
+function Branches({ db, h, setModal, openBranch }) {
+  const staffAt = (branchId) => db.employees.filter((e) => db.branchAssignments.some((a) => a.branchId === branchId && a.memberId === e.id));
+  const doctorsAt = (branchId) => db.doctors.filter((d) => db.branchAssignments.some((a) => a.branchId === branchId && a.memberId === d.id));
+  const apptsToday = (branchId) => db.appointments.filter((a) => a.branchId === branchId && a.date === todayStr());
+  return (
+    <>
+      <div className="flex justify-between items-center">
+        <h2 className="font-display font-bold text-brand-900">الفروع</h2>
+        <Btn size="sm" onClick={() => setModal({ type: "branch" })}>+ فرع</Btn>
+      </div>
+      {db.branches.length === 0 ? (
+        <Card className="p-4"><Empty text="لا توجد فروع بعد — العيادة بتشتغل كموقع واحد. أضف فرعاً لو هتفتح مكان تاني، وهتقدر تتابع كل فرع كأنه حساب منفصل (مخزن وحسابات خاصة بيه)." /></Card>
+      ) : (
+        <div className="space-y-2.5">
+          {db.branches.map((b) => (
+            <button key={b.id} onClick={() => openBranch(b.id)}
+              className="w-full text-right bg-white border border-slate-200 rounded-2xl p-4 flex items-center gap-3 hover:border-brand-300 transition-colors">
+              <div className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0" style={{ background: "#F3E2DC", color: "#9C5C4B" }}>
+                <TabIcon id="branches" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="font-bold text-sm truncate">{b.name} {b.isHeadOffice && <span className="text-[10px] bg-brand-50 text-brand-700 rounded-full px-2 py-0.5">🏠 رئيسي</span>}
+                  {!b.active && <span className="text-[10px] bg-slate-100 text-slate-400 rounded-full px-2 py-0.5">معطّل</span>}</p>
+                <p className="text-xs text-slate-500 mt-0.5">{staffAt(b.id).length} موظف · {doctorsAt(b.id).length} طبيب · {apptsToday(b.id).length} موعد اليوم</p>
+              </div>
+              <span className="text-slate-300">‹</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function BranchDetail({ db, h, branchId, back, update, setModal, audit }) {
+  const [section, setSection] = useState(null); // null | 'inv'
+  const [expanded, setExpanded] = useState(null); // null | 'staff' | 'doctors' | 'finance'
+  const branch = db.branches.find((x) => x.id === branchId);
+  const today = todayStr();
+  const staff = db.employees.filter((e) => db.branchAssignments.some((a) => a.branchId === branchId && a.memberId === e.id));
+  const doctors = db.doctors.filter((d) => db.branchAssignments.some((a) => a.branchId === branchId && a.memberId === d.id));
+  const todayAppts = db.appointments.filter((a) => a.branchId === branchId && a.date === today);
+  const finToday = branchFinance(db, branchId, today);
+  const finMonth = branchFinance(db, branchId, today.slice(0, 7) + "-01");
+  const dues = db.appointments.filter((a) => a.branchId === branchId && a.status !== "ملغي").reduce((s, a) => s + Math.max(0, a.price - a.paid), 0);
+  const lowStock = db.inventory.filter((i) => i.branchId === branchId && i.qty <= i.min);
+
+  if (!branch) return <Card className="p-4"><Empty text="الفرع ده اتحذف" /></Card>;
+
+  if (section === "inv") {
+    return (
+      <>
+        <button onClick={() => setSection(null)} className="text-sm text-brand-700 font-semibold">→ رجوع لـ {branch.name}</button>
+        <Inventory db={db} update={update} setModal={setModal} audit={audit} h={h} fixedBranchId={branchId} />
+      </>
+    );
+  }
+
+  const toggle = (k) => setExpanded(expanded === k ? null : k);
+  const tile = (key, iconId, label, sub, tone) => (
+    <button onClick={() => (key === "inv" ? setSection("inv") : toggle(key))}
+      className={`text-right rounded-2xl p-4 border transition-colors ${expanded === key ? "border-brand-300 bg-brand-50/40" : "bg-white border-slate-200 hover:border-brand-200"}`}>
+      <div className="w-9 h-9 rounded-lg flex items-center justify-center mb-2" style={{ background: tone === "rose" ? "#FDEDEA" : tone === "emerald" ? "#E4EEE6" : tone === "violet" ? "#EDE1F0" : "#F3E2DC", color: tone === "rose" ? "#B5502B" : tone === "emerald" ? "#3C7A5E" : tone === "violet" ? "#7A4E93" : "#9C5C4B" }}>
+        <TabIcon id={iconId} />
+      </div>
+      <p className="font-bold text-sm">{label}</p>
+      <p className="text-xs text-slate-500 mt-0.5">{sub}</p>
+    </button>
+  );
+
+  return (
+    <>
+      <div className="flex items-center gap-2.5">
+        <button onClick={back} className="w-8 h-8 rounded-lg flex items-center justify-center bg-white border border-slate-200 text-slate-500 shrink-0">→</button>
+        <div className="min-w-0">
+          <h2 className="font-display font-bold text-brand-900 truncate">{branch.name} {branch.isHeadOffice && <span className="text-[10px] bg-brand-50 text-brand-700 rounded-full px-2 py-0.5">🏠 رئيسي</span>}</h2>
+          <p className="text-xs text-slate-500 truncate">{branch.address || "بدون عنوان"}</p>
+        </div>
+      </div>
+
+      <Card className="p-4">
+        <p className="text-xs font-bold text-brand-700 mb-3">نظرة سريعة — الفرع</p>
+        <div className="grid grid-cols-2 gap-3">
+          <Stat label="مواعيد اليوم" value={todayAppts.length} />
+          <Stat label="تحصيلات اليوم" value={fmt(finToday.revenue)} tone="emerald" />
+          <Stat label="مستحقات المرضى" value={fmt(dues)} tone="rose" />
+          <Stat label="أصناف تحت الحد الأدنى" value={lowStock.length} tone={lowStock.length ? "rose" : "teal"} />
+        </div>
+      </Card>
+
+      <div>
+        <p className="text-xs font-bold text-slate-500 mb-2">أقسام الفرع</p>
+        <div className="grid grid-cols-2 gap-2.5">
+          {tile("staff", "staff", "الموظفون", `${staff.length} موظف`)}
+          {tile("doctors", "doctors", "الأطباء", doctors.length ? `${doctors.length} طبيب` : "لا يوجد", "emerald")}
+          {tile("inv", "inv", "المخزن", `${lowStock.length} صنف تحت الحد الأدنى`, lowStock.length ? "rose" : undefined)}
+          {tile("finance", "finance", "الحسابات", `صافي الشهر ${fmt(finMonth.net)}`, "violet")}
+        </div>
+      </div>
+
+      {expanded === "staff" && (
+        <Card className="p-4">
+          <p className="text-sm font-bold mb-2">موظفو {branch.name}</p>
+          {staff.length === 0 ? <Empty text="لا يوجد موظفون معيّنون على الفرع ده — عيّنهم من الحسابات ← الموظفون" /> : (
+            <div className="space-y-1.5">{staff.map((e) => <p key={e.id} className="text-sm">👤 {e.name} <span className="text-xs text-slate-400">— {e.role}</span></p>)}</div>
+          )}
+        </Card>
+      )}
+      {expanded === "doctors" && (
+        <Card className="p-4">
+          <p className="text-sm font-bold mb-2">أطباء {branch.name}</p>
+          {doctors.length === 0 ? <Empty text="لا يوجد أطباء معيّنون على الفرع ده" /> : (
+            <div className="space-y-1.5">{doctors.map((d) => <p key={d.id} className="text-sm">🩺 {d.name} <span className="text-xs text-slate-400">— {d.specialty}</span></p>)}</div>
+          )}
+        </Card>
+      )}
+      {expanded === "finance" && (
+        <Card className="p-4">
+          <p className="text-sm font-bold mb-3">حسابات {branch.name}</p>
+          <div className="grid grid-cols-3 gap-2 mb-3">
+            <Stat label="تحصيلات الشهر" value={fmt(finMonth.revenue)} tone="emerald" />
+            <Stat label="مصاريف الشهر" value={fmt(finMonth.expenses)} tone="rose" />
+            <Stat label="الصافي" value={fmt(finMonth.net)} tone={finMonth.net >= 0 ? "emerald" : "rose"} />
+          </div>
+          <p className="text-[11px] text-slate-400">المصاريف "العامة" (غير مربوطة بفرع) بتظهر في حسابات العيادة الكلية فقط، مش هنا.</p>
+        </Card>
+      )}
     </>
   );
 }
@@ -2504,13 +2684,13 @@ function StockMoveModal({ modal, setModal, audit, db }) {
                 d.purchaseInvoices.push({ id: invId, supplierId, date: todayStr(), total: purchaseTotal, paidAmount: paidNow ? purchaseTotal : 0, notes: `${item.name} × ${n}` });
                 if (paidNow) {
                   d.supplierPayments.push({ id: uid(), supplierId, invoiceId: invId, amount: purchaseTotal, date: todayStr(), notes: "" });
-                  d.expenses.push({ id: uid(), date: todayStr(), item: `شراء ${item.name} من ${supplierName}`, category: "مخزن", amount: purchaseTotal });
+                  d.expenses.push({ id: uid(), date: todayStr(), item: `شراء ${item.name} من ${supplierName}`, category: "مخزن", amount: purchaseTotal, branchId: item.branchId });
                 }
               } else if (logExpense) {
                 d.expenses.push({
                   id: uid(), date: todayStr(),
                   item: `شراء ${item.name}`,
-                  category: "مخزن", amount: purchaseTotal,
+                  category: "مخزن", amount: purchaseTotal, branchId: item.branchId,
                 });
               }
               recomputeAutoPricedServices(d);
@@ -3249,7 +3429,7 @@ function Modals({ modal, setModal, db, update, h, audit }) {
               const pt = d.patients.find((x) => x.id === a.patientId);
               pt.points = (pt.points || 0) - redeem + earned;
               if (cash > 0)
-                d.payments.push({ id: uid(), date: todayStr(), patientId: a.patientId, doctorId: a.doctorId, apptId: a.id, amount: cash, note: a.service, source: "مريض" });
+                d.payments.push({ id: uid(), date: todayStr(), patientId: a.patientId, doctorId: a.doctorId, apptId: a.id, amount: cash, note: a.service, source: "مريض", branchId: a.branchId });
               return d;
             }, `تحصيل ${fmt(cash)} من ${p.name}${redeem ? ` + استبدال ${redeem} نقطة` : ""}${earned ? ` (كسب ${earned} نقطة)` : ""}`);
             close();
@@ -3430,9 +3610,17 @@ function Modals({ modal, setModal, db, update, h, audit }) {
           <Field label="البند"><input className={inputCls} value={f.item || ""} onChange={set("item")} /></Field>
           <Field label="التصنيف"><input className={inputCls} value={f.category || ""} onChange={set("category")} /></Field>
           <Field label="المبلغ"><input type="number" className={inputCls} value={f.amount || ""} onChange={set("amount")} /></Field>
+          {db.branches.length > 0 && (
+            <Field label="الفرع (اختياري — سيبها فاضية لو المصروف عام على كل الفروع)">
+              <select className={inputCls} value={f.branchId || ""} onChange={set("branchId")}>
+                <option value="">عام — كل الفروع</option>
+                {db.branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
+            </Field>
+          )}
           <Btn className="w-full" tone="rose" onClick={() => {
             if (!f.item || !f.amount) return;
-            update((d) => { d.expenses.push({ id: uid(), date: todayStr(), item: f.item, category: f.category || "عام", amount: Number(f.amount) }); return d; }, `مصروف: ${f.item} — ${fmt(f.amount)}`);
+            update((d) => { d.expenses.push({ id: uid(), date: todayStr(), item: f.item, category: f.category || "عام", amount: Number(f.amount), branchId: f.branchId || "" }); return d; }, `مصروف: ${f.item} — ${fmt(f.amount)}`);
             close();
           }}>حفظ المصروف</Btn>
         </div>
@@ -4006,6 +4194,7 @@ function Modals({ modal, setModal, db, update, h, audit }) {
 
   if (modal.type === "item") {
     const specialtyId = f.specialtyId !== undefined ? f.specialtyId : ((modal.data && modal.data.specialtyId) || "");
+    const branchId = f.branchId !== undefined ? f.branchId : ((modal.data && modal.data.branchId) || (edit ? edit.branchId : "") || "");
     return (
       <Modal title={edit ? "تعديل صنف" : "إضافة صنف للمخزن"} onClose={close}>
         <div className="space-y-3">
@@ -4016,6 +4205,14 @@ function Modals({ modal, setModal, db, update, h, audit }) {
               {db.specialties.filter((s) => s.active).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
           </Field>
+          {db.branches.length > 0 && (
+            <Field label="مخزون فرع — لو سبتها مركزي هتكون متاحة للتوزيع على الفروع من هنا">
+              <select className={inputCls} value={branchId} onChange={set("branchId")}>
+                <option value="">مركزي (غير مربوط بفرع)</option>
+                {db.branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
+            </Field>
+          )}
           <div className="grid grid-cols-3 gap-3">
             <Field label="الوحدة"><input className={inputCls} value={f.unit || ""} onChange={set("unit")} /></Field>
             <Field label="الكمية"><input type="number" className={inputCls} value={f.qty || ""} onChange={set("qty")} /></Field>
@@ -4033,15 +4230,61 @@ function Modals({ modal, setModal, db, update, h, audit }) {
             update((d) => {
               if (edit) {
                 const x = d.inventory.find((y) => y.id === edit.id);
-                x.name = f.name; x.unit = f.unit || "وحدة"; x.qty = Number(f.qty || 0); x.min = Number(f.min || 0); x.cost = Number(f.cost || 0); x.itemType = f.itemType || "consumable"; x.specialtyId = specialtyId || "";
+                x.name = f.name; x.unit = f.unit || "وحدة"; x.qty = Number(f.qty || 0); x.min = Number(f.min || 0); x.cost = Number(f.cost || 0); x.itemType = f.itemType || "consumable"; x.specialtyId = specialtyId || ""; x.branchId = branchId || "";
                 recomputeAutoPricedServices(d);
               } else {
-                d.inventory.push({ id: uid(), name: f.name, unit: f.unit || "وحدة", qty: Number(f.qty || 0), min: Number(f.min || 0), cost: Number(f.cost || 0), itemType: f.itemType || "consumable", specialtyId: specialtyId || "" });
+                d.inventory.push({ id: uid(), name: f.name, unit: f.unit || "وحدة", qty: Number(f.qty || 0), min: Number(f.min || 0), cost: Number(f.cost || 0), itemType: f.itemType || "consumable", specialtyId: specialtyId || "", branchId: branchId || "" });
               }
               return d;
             }, edit ? `تعديل صنف: ${f.name}` : `إضافة صنف للمخزن: ${f.name}`);
             close();
           }}>حفظ الصنف</Btn>
+        </div>
+      </Modal>
+    );
+  }
+
+  if (modal.type === "stockTransfer") {
+    const centralItems = db.inventory.filter((i) => !i.branchId);
+    const itemId = f.itemId || "";
+    const item = db.inventory.find((i) => i.id === itemId);
+    const n = Math.max(1, Number(f.qty) || 1);
+    const toBranchId = f.toBranchId || "";
+    return (
+      <Modal title="نقل مخزون بين الفروع" onClose={close}>
+        <div className="space-y-3">
+          <Field label="الصنف (من المخزون المركزي)">
+            <select className={inputCls} value={itemId} onChange={set("itemId")}>
+              <option value="">— اختر —</option>
+              {centralItems.map((i) => <option key={i.id} value={i.id}>{i.name} — متاح {i.qty} {i.unit}</option>)}
+            </select>
+          </Field>
+          {item && (
+            <>
+              <Field label={`الكمية (المتاح: ${item.qty} ${item.unit})`}>
+                <input type="number" min="1" max={item.qty} className={inputCls} value={f.qty ?? 1} onChange={set("qty")} />
+              </Field>
+              <Field label="إلى فرع">
+                <select className={inputCls} value={toBranchId} onChange={set("toBranchId")}>
+                  <option value="">— اختر —</option>
+                  {db.branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+                </select>
+              </Field>
+            </>
+          )}
+          <Btn className="w-full" onClick={() => {
+            if (!item || !toBranchId || n > item.qty) { alert("راجع الصنف والكمية والفرع المطلوب"); return; }
+            const branchName = db.branches.find((b) => b.id === toBranchId)?.name || "";
+            update((d) => {
+              const src = d.inventory.find((x) => x.id === item.id);
+              src.qty = Math.max(0, src.qty - n);
+              const existing = d.inventory.find((x) => x.branchId === toBranchId && x.name.trim() === item.name.trim());
+              if (existing) existing.qty += n;
+              else d.inventory.push({ id: uid(), name: item.name, unit: item.unit, qty: n, min: item.min, cost: item.cost, itemType: item.itemType, specialtyId: item.specialtyId, branchId: toBranchId });
+              return d;
+            }, `نقل ${n} ${item.unit} من "${item.name}" (مركزي) إلى فرع ${branchName}`);
+            close();
+          }}>تأكيد النقل</Btn>
         </div>
       </Modal>
     );
