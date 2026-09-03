@@ -370,6 +370,68 @@ async function loadAll(member) {
 /* محرك المزامنة: يقارن الحالة قبل/بعد ويرسل الفروق للقاعدة */
 let syncBusy = false, lastPush = 0, subCb = null, rtTimer = null, memberRef = null;
 
+/* قائمة انتظار العمل بدون اتصال: أي تعديل يفشل بسبب انقطاع الشبكة (مش رفض من القاعدة) بيتخزن هنا ويتبعت أوتوماتيك لما النت يرجع */
+const OFFLINE_QUEUE_KEY = "clinicOfflineQueue";
+let offlineQueueListeners = [];
+const getOfflineQueue = () => { try { return JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || "[]"); } catch { return []; } };
+const setOfflineQueue = (q) => {
+  try { localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(q)); } catch (e) { console.warn("تعذر حفظ قائمة الانتظار", e); }
+  offlineQueueListeners.forEach((cb) => cb(q.length));
+};
+const subscribeOfflineQueue = (cb) => {
+  offlineQueueListeners.push(cb);
+  cb(getOfflineQueue().length);
+  return () => { offlineQueueListeners = offlineQueueListeners.filter((x) => x !== cb); };
+};
+const queueOfflineOp = (op) => { const q = getOfflineQueue(); q.push(op); setOfflineQueue(q); };
+
+/* آخر نسخة ناجحة من بيانات العيادة — تتحمّل لو الإنترنت مقطوع وقت الدخول أو التحميل */
+const OFFLINE_SNAPSHOT_KEY = "clinicOfflineSnapshot";
+const saveOfflineSnapshot = (userId, member, db0) => {
+  try { localStorage.setItem(OFFLINE_SNAPSHOT_KEY, JSON.stringify({ userId, member, db0, savedAt: Date.now() })); }
+  catch (e) { console.warn("تعذر حفظ نسخة للعمل بدون اتصال", e); }
+};
+const loadOfflineSnapshot = (userId) => {
+  try {
+    const raw = localStorage.getItem(OFFLINE_SNAPSHOT_KEY);
+    if (!raw) return null;
+    const snap = JSON.parse(raw);
+    return snap && snap.userId === userId ? snap : null;
+  } catch { return null; }
+};
+
+const runOp = (op) => {
+  const q = sb.from(op.table);
+  if (op.method === "insert") return q.insert(op.payload);
+  if (op.method === "update") return q.update(op.payload).eq("id", op.id);
+  if (op.method === "delete") return q.delete().eq("id", op.id);
+  if (op.method === "upsert") return q.upsert(op.payload, op.opts);
+  return Promise.resolve({ error: { message: "عملية غير معروفة" } });
+};
+
+let flushingOffline = false;
+async function flushOfflineQueue() {
+  if (flushingOffline) return;
+  const q = getOfflineQueue();
+  if (!q.length) return;
+  flushingOffline = true;
+  const remaining = [];
+  for (const op of q) {
+    try {
+      const r = await runOp(op);
+      if (r && r.error) {
+        console.error(r.error);
+        alert("⚠️ تعذر حفظ تعديل كان قيد الانتظار: " + (r.error.message || ""));
+      }
+    } catch (e) {
+      remaining.push(op); // لسه من غير اتصال — يفضل في الانتظار
+    }
+  }
+  setOfflineQueue(remaining);
+  flushingOffline = false;
+}
+if (typeof window !== "undefined") window.addEventListener("online", () => flushOfflineQueue());
+
 async function pushDiff(prev, next) {
   const ops = [];
   for (const key of Object.keys(COLS)) {
@@ -377,38 +439,42 @@ async function pushDiff(prev, next) {
     const pm = new Map((prev[key] || []).map((o) => [o.id, o]));
     const nm = new Map((next[key] || []).map((o) => [o.id, o]));
     for (const [id, o] of nm) {
-      if (!pm.has(id)) ops.push(() => sb.from(c.table).insert(c.to(o)));
-      else if (JSON.stringify(pm.get(id)) !== JSON.stringify(o)) ops.push(() => sb.from(c.table).update(c.to(o)).eq("id", id));
+      if (!pm.has(id)) ops.push({ table: c.table, method: "insert", payload: c.to(o) });
+      else if (JSON.stringify(pm.get(id)) !== JSON.stringify(o)) ops.push({ table: c.table, method: "update", payload: c.to(o), id });
     }
-    for (const id of pm.keys()) if (!nm.has(id)) ops.push(() => sb.from(c.table).delete().eq("id", id));
+    for (const id of pm.keys()) if (!nm.has(id)) ops.push({ table: c.table, method: "delete", id });
   }
   const plm = new Set((prev.logs || []).map((x) => x.id));
   for (const l of (next.logs || [])) {
     if (plm.has(l.id)) continue;
     const f = (next.auditFlags || []).find((a) => a.id === l.id);
-    ops.push(() => sb.from("audit_logs").insert({
+    ops.push({ table: "audit_logs", method: "insert", payload: {
       id: l.id, clinic_id: CID, user_name: l.user,
       area: f ? f.area : "", action: f ? f.act : l.action, item: f ? f.item : "",
       before_val: f ? f.before : "", after_val: f ? f.after : "",
       reason: f ? f.reason : "", sensitive: !!l.sensitive,
-    }));
+    } });
   }
-  if (next.clinicName !== prev.clinicName) ops.push(() => sb.from("clinics").update({ name: next.clinicName }).eq("id", CID));
+  if (next.clinicName !== prev.clinicName) ops.push({ table: "clinics", method: "update", payload: { name: next.clinicName }, id: CID });
   if (JSON.stringify(next.overheadSettings) !== JSON.stringify(prev.overheadSettings)) {
-    ops.push(() => sb.from("overhead_allocation_settings").upsert({
+    ops.push({ table: "overhead_allocation_settings", method: "upsert", payload: {
       clinic_id: CID,
       expected_monthly_cases: next.overheadSettings.expectedCases,
       target_margin_pct: next.overheadSettings.targetMarginPct,
-    }, { onConflict: "clinic_id" }));
+    }, opts: { onConflict: "clinic_id" } });
   }
   if (!ops.length) return;
   syncBusy = true;
   try {
     for (const op of ops) {
-      const r = await op();
-      if (r && r.error) {
-        console.error(r.error);
-        alert("⚠️ تعذر حفظ التعديل: " + (r.error.message || "") + "\nغالباً ليست لديك صلاحية لهذه العملية — والحماية هنا من قاعدة البيانات نفسها.");
+      try {
+        const r = await runOp(op);
+        if (r && r.error) {
+          console.error(r.error);
+          alert("⚠️ تعذر حفظ التعديل: " + (r.error.message || "") + "\nغالباً ليست لديك صلاحية لهذه العملية — والحماية هنا من قاعدة البيانات نفسها.");
+        }
+      } catch (networkErr) {
+        queueOfflineOp(op);
       }
     }
   } finally {
@@ -423,7 +489,11 @@ function subscribeRealtime() {
       if (syncBusy || Date.now() - lastPush < 1500) return;
       clearTimeout(rtTimer);
       rtTimer = setTimeout(async () => {
-        try { const d = await loadAll(memberRef); if (subCb) subCb(d); } catch (e) { console.error(e); }
+        try {
+          const d = await loadAll(memberRef);
+          if (memberRef.userId) saveOfflineSnapshot(memberRef.userId, memberRef, d);
+          if (subCb) subCb(d);
+        } catch (e) { console.error(e); }
       }, 800);
     })
     .subscribe();
@@ -701,9 +771,10 @@ function AuthGate() {
         if (error) throw error;
         if (mem && mem.length) {
           const m = mem[0];
-          memberRef = { clinic_id: m.clinic_id };
+          memberRef = { id: m.id, role: m.role, name: m.name, clinic_id: m.clinic_id, userId: session.user.id };
           const db0 = await loadAll(m);
           if (cancelled) return;
+          saveOfflineSnapshot(session.user.id, memberRef, db0);
           subscribeRealtime();
           setBoot({
             db0,
@@ -711,6 +782,7 @@ function AuthGate() {
             pushDiff,
             subscribe: (cb) => { subCb = cb; return () => { subCb = null; }; },
             signOut: () => sb.auth.signOut().then(() => location.reload()),
+            offline: false,
           });
           return;
         }
@@ -725,7 +797,24 @@ function AuthGate() {
           return;
         }
         setErr("حسابك غير مرتبط بأي عيادة بعد.\nاطلب من صاحب العيادة إضافتك (كطبيب أو موظف) بنفس الإيميل ده، وبعدها اعمل خروج ودخول تاني.");
-      } catch (e) { setErr("تعذر تحميل البيانات: " + (e.message || e)); }
+      } catch (e) {
+        if (cancelled) return;
+        const snap = loadOfflineSnapshot(session.user.id);
+        if (snap) {
+          memberRef = snap.member;
+          setBoot({
+            db0: snap.db0,
+            member: { id: snap.member.id, role: snap.member.role, name: snap.member.name, clinic_id: snap.member.clinic_id },
+            pushDiff,
+            subscribe: (cb) => { subCb = cb; return () => { subCb = null; }; },
+            signOut: () => sb.auth.signOut().then(() => location.reload()),
+            offline: true,
+            offlineSince: snap.savedAt,
+          });
+          return;
+        }
+        setErr("تعذر تحميل البيانات: " + (e.message || e));
+      }
     })();
     return () => { cancelled = true; };
   }, [session]);
@@ -1167,6 +1256,14 @@ function ClinicApp({ boot }) {
   const [patientView, setPatientView] = useState(null);
   const [branchView, setBranchView] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [pendingSync, setPendingSync] = useState(0);
+  useEffect(() => subscribeOfflineQueue(setPendingSync), []);
+  useEffect(() => {
+    if (!boot.offline) return;
+    const onOnline = () => flushOfflineQueue().then(() => location.reload());
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, [boot.offline]);
   const member = boot.member;
   const user = member.role === "owner" ? { role: "owner" }
     : member.role === "doctor" ? { role: "doctor", doctorId: member.id }
@@ -1276,6 +1373,16 @@ function ClinicApp({ boot }) {
             <TabIcon id={patientView ? "patients" : tab} />
             {patientView ? "بيانات المريض" : (tabs.find((t) => t[0] === tab)?.[2] || "")}
           </div>
+          {boot.offline && (
+            <span className="text-[11px] bg-amber-500/20 text-amber-100 border border-amber-300/40 rounded-full px-2.5 py-1 font-semibold whitespace-nowrap">
+              🔌 وضع بدون اتصال
+            </span>
+          )}
+          {pendingSync > 0 && (
+            <span className="text-[11px] bg-white/10 text-[#D7C6C0] border rounded-full px-2.5 py-1 font-semibold whitespace-nowrap" style={{ borderColor: "#1F5C63" }}>
+              ⏳ {pendingSync} في انتظار الاتصال
+            </span>
+          )}
         </div>
       </header>
 
