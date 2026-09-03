@@ -1008,7 +1008,11 @@ async function callAiAssistant(note, context) {
     body: JSON.stringify({ note, context }),
   });
   const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(json.error || `تعذر الاتصال بالمساعد الذكي (${res.status})`);
+  if (!res.ok) {
+    const err = new Error(json.error || `تعذر الاتصال بالمساعد الذكي (${res.status})`);
+    err.usage = json.usage || null;
+    throw err;
+  }
   return json;
 }
 
@@ -2660,6 +2664,7 @@ function AiAssistant({ db, h, setModal }) {
   const [err, setErr] = useState("");
   const [result, setResult] = useState(null);
   const [usedIdx, setUsedIdx] = useState({});
+  const [usage, setUsage] = useState(null);
 
   const canPatients = h.isOwner || h.can("patients") || (!h.isOwner && !h.isStaff);
   const canAppts = h.isOwner || h.can("appts") || (!h.isOwner && !h.isStaff);
@@ -2679,8 +2684,10 @@ function AiAssistant({ db, h, setModal }) {
       };
       const res = await callAiAssistant(note.trim(), context);
       setResult(res);
+      if (res.usage) setUsage(res.usage);
     } catch (e) {
       setErr(e.message || String(e));
+      if (e.usage) setUsage(e.usage);
     } finally { setBusy(false); }
   };
 
@@ -2714,6 +2721,11 @@ function AiAssistant({ db, h, setModal }) {
           value={note} onChange={(e) => setNote(e.target.value)} />
         <Btn className="w-full mt-3" onClick={run} disabled={busy || !note.trim()}>{busy ? "بيفكر…" : "✨ حلل الملاحظة"}</Btn>
         {err && <p className="text-xs text-rose-600 mt-2">{err}</p>}
+        {usage && (
+          <p className={`text-[11px] mt-2 ${usage.callCount >= usage.monthlyCap ? "text-rose-600 font-semibold" : "text-slate-400"}`}>
+            استخدام المساعد هذا الشهر: {usage.callCount} من {usage.monthlyCap}
+          </p>
+        )}
       </Card>
 
       {result && result.clarify && (
@@ -2818,6 +2830,52 @@ function Logs({ db }) {
 }
 
 /* ---------- الحسابات ---------- */
+/* عرض وتعديل سقف الاستخدام الشهري للمساعد الذكي — بيانات منفصلة عن db الرئيسية، بتتحمّل مباشرة */
+function AiUsageCard() {
+  const [usage, setUsage] = useState(null);
+  const [cap, setCap] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    sb.from("ai_usage").select("*").limit(1).then(({ data }) => {
+      if (data && data[0]) { setUsage(data[0]); setCap(String(data[0].monthly_cap)); }
+      else { setCap("300"); }
+    });
+  }, []);
+
+  const save = async () => {
+    const n = Number(cap);
+    if (!n || n < 1) { setMsg("لازم رقم صحيح أكبر من صفر"); return; }
+    setBusy(true); setMsg("");
+    try {
+      const { error } = await sb.rpc("set_ai_usage_cap", { p_cap: n });
+      if (error) throw error;
+      setUsage((u) => ({ ...(u || { call_count: 0 }), monthly_cap: n }));
+      setMsg("✅ اتحفظ");
+    } catch (e) {
+      setMsg("خطأ: " + (e.message || e));
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <Card className="p-4">
+      <h2 className="font-display font-bold text-brand-900 mb-2">✨ استهلاك المساعد الذكي</h2>
+      <p className="text-xs text-slate-500 mb-3">كل استخدام للمساعد الذكي بيكلّف فلوس فعلية (اشتراك Anthropic). السقف الشهري بيمنع أي استخدام زيادة عن الرقم ده تلقائيًا، لحد ما الشهر الجديد يبدأ.</p>
+      {usage && (
+        <p className="text-sm mb-3">الاستخدام هذا الشهر: <b className={usage.call_count >= usage.monthly_cap ? "text-rose-600" : "text-brand-800"}>{usage.call_count}</b> من {usage.monthly_cap}</p>
+      )}
+      <Field label="السقف الشهري">
+        <div className="flex gap-2">
+          <input type="number" min="1" className={inputCls} value={cap} onChange={(e) => setCap(e.target.value)} />
+          <Btn size="sm" onClick={save} disabled={busy}>{busy ? "…" : "حفظ"}</Btn>
+        </div>
+      </Field>
+      {msg && <p className="text-xs mt-1 text-emerald-600">{msg}</p>}
+    </Card>
+  );
+}
+
 function Settings({ db, update, setModal }) {
   const [supSpec, setSupSpec] = useState("");
   const [svcSpec, setSvcSpec] = useState("");
@@ -2859,6 +2917,8 @@ function Settings({ db, update, setModal }) {
         <p className="text-xs text-slate-500 mb-3">نزّل نسخة كاملة من بيانات عيادتك (مرضى، مواعيد، حسابات، مخزون... كل حاجة) كملف واحد تحتفظ بيه على جهازك وقت ما حبيت. الملف تقني (JSON) مش للقراءة اليدوية — الغرض منه الاطمئنان والأرشفة.</p>
         <Btn onClick={exportBackup} disabled={backupBusy}>{backupBusy ? "بيجهّز…" : "⬇️ تنزيل نسخة احتياطية الآن"}</Btn>
       </Card>
+
+      <AiUsageCard />
 
       <div className="flex justify-between items-center">
         <h2 className="font-display font-bold text-brand-900">الفروع</h2>
