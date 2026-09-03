@@ -1,3 +1,6 @@
+# Node (validation scripts for docs/index.html)
+node_modules/
+
 # Miscellaneous
 *.class
 *.log

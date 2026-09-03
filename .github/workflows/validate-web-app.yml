@@ -1,0 +1,33 @@
+name: Validate web app
+
+on:
+  push:
+    branches: [main, "claude/**"]
+    paths:
+      - "docs/index.html"
+      - "scripts/**"
+      - "package.json"
+  pull_request:
+    paths:
+      - "docs/index.html"
+      - "scripts/**"
+      - "package.json"
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm install
+
+      - name: Babel/JSX syntax check (docs/index.html)
+        run: npm run validate
+
+      - name: Money-math unit tests
+        run: npm test

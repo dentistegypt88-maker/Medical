@@ -1,0 +1,14 @@
+{
+  "name": "clinic-web-app-checks",
+  "private": true,
+  "description": "Lightweight validation/test scripts for docs/index.html (the Flutter app itself has no npm dependencies)",
+  "scripts": {
+    "validate": "node scripts/validate-web-app.mjs",
+    "test": "node scripts/test-money-math.mjs"
+  },
+  "devDependencies": {
+    "@babel/core": "^8.0.1",
+    "@babel/preset-env": "^8.0.2",
+    "@babel/preset-react": "^8.0.1"
+  }
+}
