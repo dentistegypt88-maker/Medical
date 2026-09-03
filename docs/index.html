@@ -3161,6 +3161,7 @@ function StockMoveModal({ modal, setModal, audit, db }) {
   const [unitCost, setUnitCost] = useState(item.cost || "");
   const [logExpense, setLogExpense] = useState(true);
   const [paidNow, setPaidNow] = useState(true);
+  const [busy, setBusy] = useState(false);
   const close = () => setModal(null);
   const n = Math.max(1, Number(qty) || 1);
   const newQty = Math.max(0, item.qty + (isOut ? -n : n));
@@ -3215,12 +3216,24 @@ function StockMoveModal({ modal, setModal, audit, db }) {
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-2.5 text-[11px] text-amber-800">
           🚨 كل حركة مخزن تُسجَّل في تقرير الرقابة باسمك.
         </div>
-        <Btn className="w-full" tone={isOut ? "rose" : "emerald"} onClick={() => {
+        <Btn className="w-full" tone={isOut ? "rose" : "emerald"} disabled={busy} onClick={async () => {
           if (reason.trim().length < 3) { alert("لازم تكتب السبب"); return; }
           const supplierName = db.suppliers.find((s) => s.id === supplierId)?.name;
+          setBusy(true);
+          let confirmedQty;
+          try {
+            // زيادة/نقصان ذري على السيرفر عشان لو حد تاني عدّل نفس الصنف في نفس اللحظة، مفيش حركة تضيع
+            const { data, error } = await sb.rpc("adjust_inventory_qty", { p_item_id: item.id, p_delta: isOut ? -n : n });
+            if (error) throw error;
+            confirmedQty = data;
+          } catch (e) {
+            alert("⚠️ تعذر تسجيل حركة المخزن — تأكد من الاتصال بالإنترنت وحاول تاني.\n" + (e.message || e));
+            setBusy(false);
+            return;
+          }
           audit((d) => {
             const x = d.inventory.find((y) => y.id === item.id);
-            x.qty = newQty;
+            x.qty = confirmedQty;
             if (!isOut && cost > 0) {
               x.cost = cost;
               if (supplierId) {
@@ -3241,9 +3254,9 @@ function StockMoveModal({ modal, setModal, audit, db }) {
             }
             return d;
           }, { area: "المخزن", act: isOut ? "صرف كمية" : "إضافة كمية", item: item.name,
-              before: item.qty + " " + item.unit, after: newQty + " " + item.unit, reason: reason.trim() });
+              before: item.qty + " " + item.unit, after: confirmedQty + " " + item.unit, reason: reason.trim() });
           close();
-        }}>تأكيد</Btn>
+        }}>{busy ? "جارِ التسجيل…" : "تأكيد"}</Btn>
       </div>
     </Modal>
   );
@@ -3802,6 +3815,7 @@ function Modals({ modal, setModal, db, update, h, audit }) {
   if (modal.type === "stockMove") return <StockMoveModal modal={modal} setModal={setModal} audit={audit} db={db} />;
   if (modal.type === "encounter") return <EncounterModal modal={modal} setModal={setModal} db={db} update={update} h={h} />;
   const [f, setF] = useState(modal.data && modal.data.edit ? { ...modal.data.edit } : (modal.data && modal.data.prefill ? { ...modal.data.prefill } : {}));
+  const [busy, setBusy] = useState(false);
   const edit = modal.data && modal.data.edit;
   const close = () => setModal(null);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
@@ -4000,25 +4014,44 @@ function Modals({ modal, setModal, db, update, h, audit }) {
             </Field>
           )}
 
-          <Btn className="w-full" tone="emerald" onClick={() => {
+          <Btn className="w-full" tone="emerald" disabled={busy} onClick={async () => {
             const cash = Math.min(Math.max(0, amount), cashDue);
             if (cash < 0 || (cash === 0 && redeem === 0)) return;
             const earned = Math.floor(cash / 100) * POINTS_PER_100;
-            update((d) => {
-              const appt = d.appointments.find((x) => x.id === a.id);
-              appt.paid += cash + redeem;
-              const pt = d.patients.find((x) => x.id === a.patientId);
-              pt.points = (pt.points || 0) - redeem + earned;
-              if (cash > 0)
-                d.payments.push({
-                  id: uid(), date: todayStr(), patientId: a.patientId, doctorId: a.doctorId, apptId: a.id,
-                  amount: cash, note: a.service, source: "مريض", branchId: a.branchId,
-                  method, currency, fxRate: isForeign ? fxRate : 1, foreignAmount: isForeign ? (Number(foreignAmount) || 0) : null,
-                });
-              return d;
-            }, `تحصيل ${fmt(cash)} من ${p.name} (${method}${isForeign ? ` — ${foreignAmount} ${currency}` : ""})${redeem ? ` + استبدال ${redeem} نقطة` : ""}${earned ? ` (كسب ${earned} نقطة)` : ""}`);
-            close();
-          }}>تأكيد التحصيل</Btn>
+            setBusy(true);
+            try {
+              // زيادة ذرية على السيرفر (مش حساب محلي) عشان لو حد تاني بيحصّل نفس الموعد في نفس اللحظة، مفيش تحصيلة تضيع
+              let newPaid = a.paid;
+              if (cash + redeem !== 0) {
+                const { data, error } = await sb.rpc("collect_appointment_payment", { p_appt_id: a.id, p_amount: cash + redeem });
+                if (error) throw error;
+                newPaid = data;
+              }
+              let newPoints = p.points || 0;
+              if (earned - redeem !== 0) {
+                const { data, error } = await sb.rpc("adjust_patient_points", { p_patient_id: a.patientId, p_delta: earned - redeem });
+                if (error) throw error;
+                newPoints = data;
+              }
+              update((d) => {
+                const appt = d.appointments.find((x) => x.id === a.id);
+                appt.paid = newPaid;
+                const pt = d.patients.find((x) => x.id === a.patientId);
+                pt.points = newPoints;
+                if (cash > 0)
+                  d.payments.push({
+                    id: uid(), date: todayStr(), patientId: a.patientId, doctorId: a.doctorId, apptId: a.id,
+                    amount: cash, note: a.service, source: "مريض", branchId: a.branchId,
+                    method, currency, fxRate: isForeign ? fxRate : 1, foreignAmount: isForeign ? (Number(foreignAmount) || 0) : null,
+                  });
+                return d;
+              }, `تحصيل ${fmt(cash)} من ${p.name} (${method}${isForeign ? ` — ${foreignAmount} ${currency}` : ""})${redeem ? ` + استبدال ${redeem} نقطة` : ""}${earned ? ` (كسب ${earned} نقطة)` : ""}`);
+              close();
+            } catch (e) {
+              alert("⚠️ تعذر تسجيل التحصيل — تأكد من الاتصال بالإنترنت وحاول تاني.\n" + (e.message || e));
+              setBusy(false);
+            }
+          }}>{busy ? "جارِ التحصيل…" : "تأكيد التحصيل"}</Btn>
           <p className="text-[10px] text-slate-400">يكسب المريض {POINTS_PER_100} نقاط تلقائياً عن كل 100 ج.م مدفوعة.</p>
         </div>
       </Modal>
