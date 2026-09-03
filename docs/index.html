@@ -762,6 +762,15 @@ function AuthGate() {
   const [portal, setPortal] = useState("staff"); // staff | patient — قبل تسجيل الدخول بس
 
   useEffect(() => {
+    // React اشتغل فعليًا ووصل هنا = التطبيق سليم، فأي رسالة خطأ قديمة ظاهرة على الشاشة بقت غير
+    // صحيحة (ممكن تكون طلعت من مشكلة مؤقتة في تحميل ملف خارجي قبل ما الصفحة تكمل، والبرنامج عدّاها).
+    var b = document.getElementById("errbox");
+    if (b) { b.style.display = "none"; b.textContent = ""; }
+    var boot0 = document.getElementById("boot");
+    if (boot0) boot0.style.display = "none";
+  }, []);
+
+  useEffect(() => {
     sb.auth.getSession().then(({ data }) => setSession(data.session || null));
     const { data: sub } = sb.auth.onAuthStateChange((e, s) => {
       setSession(s || null);
