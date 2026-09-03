@@ -77,6 +77,14 @@
     }, 2500);
   });
 </script>
+<script>
+  /* تسجيل Service Worker لتشغيل البرنامج حتى بدون إنترنت — أي فشل هنا لازم يكون بصمت تمامًا وميأثرش على التطبيق نفسه */
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () {
+      try { navigator.serviceWorker.register('./sw.js').catch(function () {}); } catch (e) {}
+    });
+  }
+</script>
 </head>
 <body>
 <div id="errbox"></div>
