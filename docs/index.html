@@ -143,8 +143,8 @@ const COLS = {
   },
   appointments: {
     table: "appointments",
-    from: (r) => ({ id: r.id, patientId: r.patient_id, doctorId: es(r.doctor_id), date: r.date, time: r.time, service: es(r.service), price: num(r.price), contractId: es(r.contract_id), patientShare: num(r.patient_share), entityShare: num(r.entity_share), entityPaid: !!r.entity_paid, paid: num(r.paid), status: r.status, branchId: es(r.branch_id) }),
-    to: (o) => ({ id: o.id, clinic_id: CID, patient_id: o.patientId, doctor_id: nn(o.doctorId), date: o.date, time: o.time, service: o.service || "كشف", price: o.price || 0, contract_id: nn(o.contractId), patient_share: o.patientShare || 0, entity_share: o.entityShare || 0, entity_paid: !!o.entityPaid, paid: o.paid || 0, status: o.status, branch_id: nn(o.branchId) }),
+    from: (r) => ({ id: r.id, patientId: r.patient_id, doctorId: es(r.doctor_id), date: r.date, time: r.time, service: es(r.service), price: num(r.price), contractId: es(r.contract_id), patientShare: num(r.patient_share), entityShare: num(r.entity_share), entityPaid: !!r.entity_paid, paid: num(r.paid), status: r.status, branchId: es(r.branch_id), reminderSent: !!r.reminder_sent }),
+    to: (o) => ({ id: o.id, clinic_id: CID, patient_id: o.patientId, doctor_id: nn(o.doctorId), date: o.date, time: o.time, service: o.service || "كشف", price: o.price || 0, contract_id: nn(o.contractId), patient_share: o.patientShare || 0, entity_share: o.entityShare || 0, entity_paid: !!o.entityPaid, paid: o.paid || 0, status: o.status, branch_id: nn(o.branchId), reminder_sent: !!o.reminderSent }),
   },
   branches: {
     table: "clinic_branches",
@@ -1445,7 +1445,7 @@ function ClinicApp({ boot }) {
                 : <Branches db={db} h={h} setModal={setModal} openBranch={setBranchView} />
             )}
             {tab === "ai" && <AiAssistant db={db} h={h} setModal={setModal} />}
-            {tab === "dash" && <Dashboard db={db} h={h} />}
+            {tab === "dash" && <Dashboard db={db} h={h} update={update} />}
             {tab === "appts" && <Appointments db={db} h={h} update={update} setModal={setModal} />}
             {tab === "patients" && <Patients db={db} h={h} setModal={setModal} openSheet={setPatientView} update={update} />}
             {tab === "finance" && h.isOwner && <Finance db={db} h={h} setModal={setModal} update={update} />}
@@ -1471,10 +1471,13 @@ function ClinicApp({ boot }) {
 
 /* ---------- الدخول ---------- */
 /* ---------- الرئيسية ---------- */
-function Dashboard({ db, h }) {
+function Dashboard({ db, h, update }) {
   const t = todayStr();
+  const tomorrow = new Date(Date.now() + 86400000).toLocaleDateString("en-CA");
   const mine = (a) => h.isOwner || h.isStaff || a.doctorId === h.myDocId;
   const todays = db.appointments.filter((a) => a.date === t && a.status !== "ملغي" && mine(a)).sort((a, b) => a.time.localeCompare(b.time));
+  const tomorrowAppts = db.appointments.filter((a) => a.date === tomorrow && a.status !== "ملغي" && mine(a)).sort((a, b) => a.time.localeCompare(b.time));
+  const tomorrowPending = tomorrowAppts.filter((a) => !a.reminderSent);
   const collectedToday = db.payments.filter((p) => p.date === t && (h.isOwner || h.isStaff || p.doctorId === h.myDocId)).reduce((s, p) => s + p.amount, 0);
   const dues = db.appointments.filter((a) => a.status !== "ملغي" && mine(a)).reduce((s, a) => s + Math.max(0, (a.patientShare ?? a.price) - a.paid), 0);
   const lowStock = db.inventory.filter((i) => i.qty <= i.min);
@@ -1483,6 +1486,11 @@ function Dashboard({ db, h }) {
   const remind = (a) => {
     const msg = `مرحباً ${h.pName(a.patientId)} 👋\nتذكير بموعدك في ${db.clinicName} اليوم الساعة ${a.time} مع ${h.dName(a.doctorId)}.\nنتشرف بحضورك 🌟`;
     window.open(waLink(h.pPhone(a.patientId), msg), "_blank");
+  };
+  const remindTomorrow = (a) => {
+    const msg = `مرحباً ${h.pName(a.patientId)} 👋\nتذكير بموعدك بكرة في ${db.clinicName} الساعة ${a.time} مع ${h.dName(a.doctorId)}.\nنتشرف بحضورك 🌟`;
+    window.open(waLink(h.pPhone(a.patientId), msg), "_blank");
+    update((d) => { d.appointments.find((x) => x.id === a.id).reminderSent = true; return d; });
   };
 
   return (
@@ -1515,6 +1523,29 @@ function Dashboard({ db, h }) {
           </div>
         )}
       </Card>
+
+      {tomorrowAppts.length > 0 && (
+        <Card className="p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="font-display font-bold text-brand-900">🔔 تذكير بمواعيد بكرة</h2>
+            <span className="text-xs font-semibold text-slate-500">{tomorrowAppts.length - tomorrowPending.length} من {tomorrowAppts.length} اتذكّروا</span>
+          </div>
+          {tomorrowPending.length === 0 ? <Empty text="كل مواعيد بكرة اتذكّر بيها ✅" /> : (
+            <div className="space-y-2">
+              {tomorrowPending.map((a) => (
+                <div key={a.id} className="flex items-center gap-3 bg-amber-50/60 rounded-xl p-3">
+                  <div className="bg-amber-500 text-white rounded-lg px-2 py-1 text-xs font-bold min-w-[52px] text-center">{a.time}</div>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-semibold text-sm truncate">{h.pName(a.patientId)}</p>
+                    <p className="text-xs text-slate-500 truncate">{a.service} · {h.dName(a.doctorId)}</p>
+                  </div>
+                  <Btn size="sm" tone="wa" onClick={() => remindTomorrow(a)}>واتساب</Btn>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      )}
 
       {h.isOwner && lowStock.length > 0 && (
         <Card className="p-4">
