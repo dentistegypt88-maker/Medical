@@ -1,10 +1,14 @@
 /* Service Worker لتشغيل نظام إدارة العيادات حتى بدون إنترنت.
-   الاستراتيجية: صفحة التطبيق نفسها "الشبكة أولاً" — أي زيارة فيها نت بتاخد آخر نسخة منشورة فورًا،
-   ولو الشبكة فشلت بيتم الرجوع لآخر نسخة محفوظة. مكتبات الـCDN (React/Babel/Supabase/Tailwind) والخطوط
-   "الكاش أولاً" لأنها روابط ثابتة بنفس الإصدار. طلبات Supabase نفسها (قاعدة البيانات) ما بتتلمسش هنا خالص —
-   البرنامج بيتعامل معاها بمنطقه الخاص (قائمة انتظار العمل بدون اتصال). */
+   الاستراتيجية: "الشبكة أولاً" لكل حاجة بيتحكم فيها هنا (صفحة التطبيق + مكتبات الـCDN + الخطوط) —
+   أي زيارة فيها نت بتاخد آخر نسخة فعليًا من المصدر، والكاش بيُستخدم بس لو الشبكة فشلت فعلاً (رفض
+   الطلب نفسه، مش مجرد رد غير مثالي). ده مهم خصوصًا لمكتبات CDN اللي بنحمّلها بوضع no-cors: الرد
+   بييجي "معتم" (opaque) ومينفعش نتأكد من كود الحالة الحقيقي بتاعه، فلو خزّناه كـ"كاش أساسي" ممكن
+   رد فاشل من الشبكة (اتصال ضعيف) يتخزن ويفضل يتقدَّم على أي محاولة تانية للأبد. الشبكة أولاً بتمنع
+   السيناريو ده: الكاش بيبقى مجرد شبكة أمان أخيرة، مش مصدر افتراضي. طلبات Supabase نفسها (قاعدة
+   البيانات والمصادقة) ما بتتلمسش هنا خالص — البرنامج بيتعامل معاها بمنطقه الخاص (قائمة انتظار
+   العمل بدون اتصال). */
 
-const CACHE_VERSION = "v1";
+const CACHE_VERSION = "v2";
 const SHELL_CACHE = "clinic-shell-" + CACHE_VERSION;
 const VENDOR_CACHE = "clinic-vendor-" + CACHE_VERSION;
 
@@ -19,16 +23,8 @@ const VENDOR_URLS = [
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
     self.skipWaiting();
-    try {
-      const shellCache = await caches.open(SHELL_CACHE);
-      await shellCache.add(new Request("./", { cache: "reload" }));
-    } catch (e) { /* أفضل محاولة فقط — لو فشلت متعملش حاجة */ }
-    try {
-      const vendorCache = await caches.open(VENDOR_CACHE);
-      await Promise.all(
-        VENDOR_URLS.map((u) => vendorCache.add(new Request(u, { mode: "no-cors" })).catch(() => {}))
-      );
-    } catch (e) { /* أفضل محاولة فقط */ }
+    // ملاحظة: مفيش تخزين مسبق وقت التثبيت — الكاش بيتبني بس من نجاح فعلي أثناء fetch، عشان محدش
+    // يخزّن رد سيء من غير ما نحاول نحدّثه أول فرصة بعدها.
   })());
 });
 
@@ -39,6 +35,19 @@ self.addEventListener("activate", (event) => {
     await self.clients.claim();
   })());
 });
+
+async function networkFirst(req, cacheName, fetchReq) {
+  const cache = await caches.open(cacheName);
+  try {
+    const fresh = await fetch(fetchReq || req);
+    cache.put(req, fresh.clone());
+    return fresh;
+  } catch (e) {
+    const cached = await cache.match(req);
+    if (cached) return cached;
+    throw e;
+  }
+}
 
 self.addEventListener("fetch", (event) => {
   const req = event.request;
@@ -54,30 +63,13 @@ self.addEventListener("fetch", (event) => {
   const isVendor = VENDOR_URLS.includes(req.url);
 
   if (isSameOrigin) {
-    // صفحة التطبيق نفسها: شبكة أولاً — أي تحديث بننشره يوصل فورًا لو فيه نت
-    event.respondWith((async () => {
-      try {
-        const fresh = await fetch(req);
-        const cache = await caches.open(SHELL_CACHE);
-        cache.put(req, fresh.clone());
-        return fresh;
-      } catch (e) {
-        const cached = await caches.match(req);
-        return cached || Response.error();
-      }
-    })());
+    event.respondWith(networkFirst(req, SHELL_CACHE).catch(() => Response.error()));
     return;
   }
 
   if (isVendor || isFontHost) {
-    // مكتبات وخطوط ثابتة: كاش أولاً + تحديث في الخلفية
-    event.respondWith((async () => {
-      const cache = await caches.open(VENDOR_CACHE);
-      const cached = await cache.match(req);
-      const network = fetch(new Request(req.url, { mode: "no-cors" }))
-        .then((res) => { cache.put(req, res.clone()); return res; })
-        .catch(() => null);
-      return cached || (await network) || Response.error();
-    })());
+    // وضع no-cors إجباري هنا (روابط cdnjs/jsdelivr مش كلها بترجّع رؤوس CORS) — الرد بيبقى معتم
+    // ومينفعش نقرأ حالته، فالشبكة أولاً هي اللي بتمنع تخزين رد فاشل كأساسي.
+    event.respondWith(networkFirst(req, VENDOR_CACHE, new Request(req.url, { mode: "no-cors" })).catch(() => Response.error()));
   }
 });
