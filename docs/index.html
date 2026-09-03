@@ -902,6 +902,19 @@ const contractSplit = (price, contract) => {
   return { net, patientShare, entityShare: net - patientShare };
 };
 
+/* المساعد الذكي: يحوّل ملاحظة حرة لمسودة إجراءات منظمة عبر Edge Function مؤمّنة (الذكاء الاصطناعي لا يكتب في القاعدة مباشرة) */
+async function callAiAssistant(note, context) {
+  const { data: { session } } = await sb.auth.getSession();
+  const res = await fetch(`${SUPA_URL}/functions/v1/ai-assistant`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}`, apikey: SUPA_KEY },
+    body: JSON.stringify({ note, context }),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.error || `تعذر الاتصال بالمساعد الذكي (${res.status})`);
+  return json;
+}
+
 /* حسابات فرع معين: التحصيلات (من دفعات مربوطة بيه صراحةً أو عبر موعد تابع له) − مصاريف مربوطة بيه صراحةً */
 const branchFinance = (db, branchId, fromDate) => {
   const apptBranchOf = new Map(db.appointments.map((a) => [a.id, a.branchId]));
@@ -1127,6 +1140,7 @@ const Bar = ({ label, value, max, money = true }) => (
 const TabIcon = ({ id }) => {
   const p = { width: 15, height: 15, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round" };
   if (id === "branches") return <svg {...p}><path d="M5 20V9.5L12 5l7 4.5V20" /><path d="M9.5 20v-5.5h5V20" /></svg>;
+  if (id === "ai") return <svg {...p}><path d="M12 3.5v3M12 17.5v3M3.5 12h3M17.5 12h3M6 6l2 2M16 16l2 2M18 6l-2 2M8 16l-2 2" /><circle cx="12" cy="12" r="2.6" /></svg>;
   if (id === "dash") return <svg {...p}><path d="M4 11 12 4l8 7" /><path d="M6 10v9h5v-6h2v6h5v-9" /></svg>;
   if (id === "appts") return <svg {...p}><rect x="4" y="6" width="16" height="14" rx="3" /><path d="M4 10h16" /><path d="M8 4v4M16 4v4" /></svg>;
   if (id === "patients") return <svg {...p}><circle cx="9" cy="9" r="3" /><path d="M4.3 19c0-3 2.3-5 4.7-5s4.7 2 4.7 5" /><circle cx="17" cy="10.2" r="2.3" /><path d="M15.6 19c.3-2.1 1.6-3.5 3-3.9" /></svg>;
@@ -1214,9 +1228,10 @@ function ClinicApp({ boot }) {
     ["dash", "🏠", "الرئيسية"], ["appts", "📅", "المواعيد"], ["patients", "🧑‍🤝‍🧑", "المرضى"],
     ["finance", "💰", "الماليات"], ["reports", "📊", "التقارير"], ["contracts", "📜", "التعاقدات"],
     ["lab", "🦷", "المعمل"], ["staff", "🕐", "الموظفون"], ["inv", "📦", "المخزن"],
+    ["ai", "✨", "المساعد الذكي"],
     ["watch", "🚨", "الرقابة"], ["logs", "📝", "سجل النشاط"], ["settings", "⚙️", "الحسابات"],
   ];
-  const doctorTabs = [["dash", "🏠", "يومي"], ["appts", "📅", "مواعيدي"], ["patients", "🧑‍🤝‍🧑", "المرضى"], ["myacc", "💼", "حسابي"]];
+  const doctorTabs = [["dash", "🏠", "يومي"], ["appts", "📅", "مواعيدي"], ["patients", "🧑‍🤝‍🧑", "المرضى"], ["ai", "✨", "المساعد الذكي"], ["myacc", "💼", "حسابي"]];
   const staffTabs = [
     ["dash", "🏠", "يومي"],
     ...(h.can("appts") ? [["appts", "📅", "المواعيد"]] : []),
@@ -1226,6 +1241,7 @@ function ClinicApp({ boot }) {
     ...(h.can("reports") ? [["reports", "📊", "التقارير"]] : []),
     ...(h.can("contracts") ? [["contracts", "📜", "التعاقدات"]] : []),
     ...(h.can("lab") ? [["lab", "🦷", "المعمل"]] : []),
+    ["ai", "✨", "المساعد الذكي"],
     ["myattend", "🕐", "حضوري"],
   ];
   const tabs = h.isOwner ? ownerTabs : h.isStaff ? staffTabs : doctorTabs;
@@ -1313,6 +1329,7 @@ function ClinicApp({ boot }) {
                 ? <BranchDetail db={db} h={h} branchId={branchView} back={() => setBranchView(null)} update={update} setModal={setModal} audit={audit} />
                 : <Branches db={db} h={h} setModal={setModal} openBranch={setBranchView} />
             )}
+            {tab === "ai" && <AiAssistant db={db} h={h} setModal={setModal} />}
             {tab === "dash" && <Dashboard db={db} h={h} />}
             {tab === "appts" && <Appointments db={db} h={h} update={update} setModal={setModal} />}
             {tab === "patients" && <Patients db={db} h={h} setModal={setModal} openSheet={setPatientView} update={update} />}
@@ -2490,6 +2507,147 @@ function BranchDetail({ db, h, branchId, back, update, setModal, audit }) {
   );
 }
 
+/* ---------- المساعد الذكي ---------- */
+function AiAssistant({ db, h, setModal }) {
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [result, setResult] = useState(null);
+  const [usedIdx, setUsedIdx] = useState({});
+
+  const canPatients = h.isOwner || h.can("patients") || (!h.isOwner && !h.isStaff);
+  const canAppts = h.isOwner || h.can("appts") || (!h.isOwner && !h.isStaff);
+  const canExpense = h.isOwner;
+  const canPayment = h.isOwner || h.can("collect") || (!h.isOwner && !h.isStaff);
+  const canEncounter = h.isOwner || (!h.isOwner && !h.isStaff) || h.can("patients");
+
+  const run = async () => {
+    if (!note.trim()) return;
+    setBusy(true); setErr(""); setResult(null); setUsedIdx({});
+    try {
+      const context = {
+        today: todayStr(),
+        patients: db.patients.map((p) => ({ id: p.id, name: p.name })),
+        doctors: db.doctors.map((d) => ({ id: d.id, name: d.name })),
+        services: db.services.filter((s) => s.active).map((s) => ({ id: s.id, name: s.name, price: s.price })),
+      };
+      const res = await callAiAssistant(note.trim(), context);
+      setResult(res);
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally { setBusy(false); }
+  };
+
+  const markUsed = (i) => setUsedIdx((u) => ({ ...u, [i]: true }));
+  const openFor = (i, a) => {
+    markUsed(i);
+    if (a.type === "new_patient") {
+      setModal({ type: "patient", data: { prefill: { name: a.name, phone: a.phone || "", gender: a.gender || "", age: a.age || "" } } });
+    } else if (a.type === "new_appointment") {
+      setModal({ type: "appt", data: { prefill: {
+        patientId: a.patientId || "", doctorId: a.doctorId || (h.isOwner ? "" : h.myDocId),
+        date: a.date || todayStr(), time: a.time || "", service: a.service || "", price: a.price ?? "",
+      } } });
+    } else if (a.type === "expense") {
+      setModal({ type: "expense", data: { prefill: { item: a.item, category: a.category || "", amount: a.amount ?? "" } } });
+    } else if (a.type === "encounter_note") {
+      setModal({ type: "encounter", data: { patientId: a.patientId, prefill: {
+        chiefComplaint: a.chiefComplaint || "", examination: a.examination || "", assessment: a.assessment || "", plan: a.plan || "",
+      } } });
+    }
+  };
+
+  const dueAppointmentsFor = (patientId) => db.appointments.filter((x) => x.patientId === patientId && x.status !== "ملغي" && ((x.patientShare ?? x.price) - x.paid) > 0);
+
+  return (
+    <>
+      <Card className="p-4">
+        <h2 className="font-display font-bold text-brand-900 mb-1">✨ المساعد الذكي</h2>
+        <p className="text-xs text-slate-500 mb-3">اكتب ملاحظة بأي صيغة — زيارة، تحصيلة، مصروف، مريض جديد — والمساعد هيجهزها كمسودة تراجعها وتأكدها بنفسك قبل الحفظ. المساعد لا يسجل أي حاجة تلقائيًا في القاعدة.</p>
+        <textarea rows="4" className={inputCls} placeholder="مثال: أحمد محمود جه النهارده عند دكتور سارة عمل حشو وسدد ٢٠٠ كاش"
+          value={note} onChange={(e) => setNote(e.target.value)} />
+        <Btn className="w-full mt-3" onClick={run} disabled={busy || !note.trim()}>{busy ? "بيفكر…" : "✨ حلل الملاحظة"}</Btn>
+        {err && <p className="text-xs text-rose-600 mt-2">{err}</p>}
+      </Card>
+
+      {result && result.clarify && (
+        <Card className="p-4 border border-amber-200 bg-amber-50">
+          <p className="text-sm text-amber-800">🤔 {result.clarify}</p>
+        </Card>
+      )}
+
+      {result && result.actions.length > 0 && (
+        <div className="space-y-2">
+          {result.actions.map((a, i) => {
+            const used = !!usedIdx[i];
+            if (a.type === "new_patient") return (
+              <Card key={i} className={`p-4 ${used ? "opacity-50" : ""}`}>
+                <p className="text-xs font-bold text-brand-700 mb-1">مريض جديد</p>
+                <p className="text-sm font-semibold">{a.name}</p>
+                <p className="text-xs text-slate-500">{[a.phone, a.gender, a.age && `${a.age} سنة`].filter(Boolean).join(" · ") || "بدون تفاصيل إضافية"}</p>
+                {canPatients ? <Btn size="sm" className="mt-2" onClick={() => openFor(i, a)} disabled={used}>{used ? "اتفتح" : "استخدم واملأ النموذج"}</Btn>
+                  : <p className="text-xs text-rose-600 mt-2">مفيش صلاحية إضافة مريض</p>}
+              </Card>
+            );
+            if (a.type === "new_appointment") return (
+              <Card key={i} className={`p-4 ${used ? "opacity-50" : ""}`}>
+                <p className="text-xs font-bold text-brand-700 mb-1">حجز موعد</p>
+                <p className="text-sm font-semibold">{a.patientName}{a.patientId ? "" : " (مش متعرف عليه — هتختاره يدوي)"}</p>
+                <p className="text-xs text-slate-500">{[a.doctorName, a.date, a.time, a.service, a.price != null && fmt(a.price)].filter(Boolean).join(" · ") || "التفاصيل غير مكتملة"}</p>
+                {canAppts ? <Btn size="sm" className="mt-2" onClick={() => openFor(i, a)} disabled={used}>{used ? "اتفتح" : "استخدم واملأ النموذج"}</Btn>
+                  : <p className="text-xs text-rose-600 mt-2">مفيش صلاحية حجز مواعيد</p>}
+              </Card>
+            );
+            if (a.type === "expense") return (
+              <Card key={i} className={`p-4 ${used ? "opacity-50" : ""}`}>
+                <p className="text-xs font-bold text-rose-700 mb-1">مصروف</p>
+                <p className="text-sm font-semibold">{a.item}</p>
+                <p className="text-xs text-slate-500">{[a.category, a.amount != null && fmt(a.amount)].filter(Boolean).join(" · ")}</p>
+                {canExpense ? <Btn size="sm" className="mt-2" onClick={() => openFor(i, a)} disabled={used}>{used ? "اتفتح" : "استخدم واملأ النموذج"}</Btn>
+                  : <p className="text-xs text-rose-600 mt-2">المصروفات لصاحب العيادة بس</p>}
+              </Card>
+            );
+            if (a.type === "payment") {
+              const due = a.patientId ? dueAppointmentsFor(a.patientId) : [];
+              return (
+                <Card key={i} className={`p-4 ${used ? "opacity-50" : ""}`}>
+                  <p className="text-xs font-bold text-emerald-700 mb-1">تحصيلة</p>
+                  <p className="text-sm font-semibold">{a.patientName}{a.patientId ? "" : " (مش متعرف عليه)"}</p>
+                  <p className="text-xs text-slate-500">{[a.amount != null && fmt(a.amount), a.method].filter(Boolean).join(" · ")}</p>
+                  {!canPayment ? <p className="text-xs text-rose-600 mt-2">مفيش صلاحية تحصيل</p>
+                    : !a.patientId ? <p className="text-xs text-slate-400 mt-2">دوّر على المريض من شاشة المرضى وسجّل التحصيلة من هناك</p>
+                    : due.length === 0 ? <p className="text-xs text-slate-400 mt-2">مفيش مواعيد عليها مستحقات لهذا المريض</p>
+                    : (
+                      <div className="space-y-1.5 mt-2">
+                        {due.map((appt) => (
+                          <button key={appt.id} onClick={() => { markUsed(i); setModal({ type: "collect", data: appt }); }}
+                            className="w-full text-right bg-emerald-50 hover:bg-emerald-100 rounded-xl p-2 text-xs">
+                            {appt.date} · {appt.service} — متبقي {fmt((appt.patientShare ?? appt.price) - appt.paid)}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                </Card>
+              );
+            }
+            if (a.type === "encounter_note") return (
+              <Card key={i} className={`p-4 ${used ? "opacity-50" : ""}`}>
+                <p className="text-xs font-bold text-sky-700 mb-1">زيارة / شيت طبي</p>
+                <p className="text-sm font-semibold">{a.patientName}{a.patientId ? "" : " (مش متعرف عليه — لازم يكون مريض مسجل)"}</p>
+                <p className="text-xs text-slate-500">{[a.chiefComplaint, a.plan].filter(Boolean).join(" — ") || "بدون تفاصيل"}</p>
+                {!canEncounter ? <p className="text-xs text-rose-600 mt-2">مفيش صلاحية تسجيل زيارة</p>
+                  : !a.patientId ? <p className="text-xs text-slate-400 mt-2">لازم تحدد المريض من شاشة المرضى الأول</p>
+                  : <Btn size="sm" className="mt-2" onClick={() => openFor(i, a)} disabled={used}>{used ? "اتفتح" : "استخدم واملأ النموذج"}</Btn>}
+              </Card>
+            );
+            return null;
+          })}
+        </div>
+      )}
+    </>
+  );
+}
+
 /* ---------- سجل النشاط ---------- */
 function Logs({ db }) {
   return (
@@ -3100,14 +3258,15 @@ function EncounterModal({ modal, setModal, db, update, h }) {
   const { patientId } = modal.data;
   const patient = db.patients.find((p) => p.id === patientId);
   const [edit, setEdit] = useState(modal.data.edit || null);
+  const pre = modal.data.prefill || {};
   const [doctorId, setDoctorId] = useState(edit?.doctorId || h.myDocId || "");
   const doctor = db.doctors.find((d) => d.id === doctorId);
   const [specialtyId, setSpecialtyId] = useState(edit?.specialtyId || doctor?.specialtyId || "");
-  const [chiefComplaint, setChiefComplaint] = useState(edit?.chiefComplaint || "");
-  const [hpi, setHpi] = useState(edit?.hpi || "");
-  const [examination, setExamination] = useState(edit?.examination || "");
-  const [assessment, setAssessment] = useState(edit?.assessment || "");
-  const [plan, setPlan] = useState(edit?.plan || "");
+  const [chiefComplaint, setChiefComplaint] = useState(edit?.chiefComplaint || pre.chiefComplaint || "");
+  const [hpi, setHpi] = useState(edit?.hpi || pre.hpi || "");
+  const [examination, setExamination] = useState(edit?.examination || pre.examination || "");
+  const [assessment, setAssessment] = useState(edit?.assessment || pre.assessment || "");
+  const [plan, setPlan] = useState(edit?.plan || pre.plan || "");
   const [fieldValues, setFieldValues] = useState(() => {
     if (!edit) return {};
     const out = {};
@@ -3500,7 +3659,7 @@ function Modals({ modal, setModal, db, update, h, audit }) {
   if (modal.type === "reason") return <ReasonModal modal={modal} setModal={setModal} audit={audit} />;
   if (modal.type === "stockMove") return <StockMoveModal modal={modal} setModal={setModal} audit={audit} db={db} />;
   if (modal.type === "encounter") return <EncounterModal modal={modal} setModal={setModal} db={db} update={update} h={h} />;
-  const [f, setF] = useState(modal.data && modal.data.edit ? { ...modal.data.edit } : {});
+  const [f, setF] = useState(modal.data && modal.data.edit ? { ...modal.data.edit } : (modal.data && modal.data.prefill ? { ...modal.data.prefill } : {}));
   const edit = modal.data && modal.data.edit;
   const close = () => setModal(null);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
