@@ -2790,7 +2790,28 @@ function Logs({ db }) {
 function Settings({ db, update, setModal }) {
   const [supSpec, setSupSpec] = useState("");
   const [svcSpec, setSvcSpec] = useState("");
+  const [backupBusy, setBackupBusy] = useState(false);
   const specName = (id) => db.specialties.find((s) => s.id === id)?.name;
+
+  const exportBackup = () => {
+    setBackupBusy(true);
+    try {
+      const payload = { exportedAt: new Date().toISOString(), clinicName: db.clinicName, data: db };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const safeName = (db.clinicName || "عيادتي").replace(/[\\/:*?"<>|]+/g, "-").trim() || "عيادتي";
+      a.href = url;
+      a.download = `نسخة-احتياطية-${safeName}-${todayStr()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
   return (
     <>
       <Card className="p-4">
@@ -2800,6 +2821,12 @@ function Settings({ db, update, setModal }) {
           <input className={inputCls + " mt-2"} value={db.clinicName} onChange={(e) => update((d) => { d.clinicName = e.target.value; return d; })} />
         </Field>
         <p className="text-xs text-slate-400 mt-2">⭐ نظام الولاء: يكسب المريض {POINTS_PER_100} نقاط لكل 100 ج.م مدفوعة، والنقطة = 1 ج.م خصم.</p>
+      </Card>
+
+      <Card className="p-4">
+        <h2 className="font-display font-bold text-brand-900 mb-2">💾 نسخة احتياطية</h2>
+        <p className="text-xs text-slate-500 mb-3">نزّل نسخة كاملة من بيانات عيادتك (مرضى، مواعيد، حسابات، مخزون... كل حاجة) كملف واحد تحتفظ بيه على جهازك وقت ما حبيت. الملف تقني (JSON) مش للقراءة اليدوية — الغرض منه الاطمئنان والأرشفة.</p>
+        <Btn onClick={exportBackup} disabled={backupBusy}>{backupBusy ? "بيجهّز…" : "⬇️ تنزيل نسخة احتياطية الآن"}</Btn>
       </Card>
 
       <div className="flex justify-between items-center">
