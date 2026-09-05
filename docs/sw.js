@@ -8,16 +8,15 @@
    البيانات والمصادقة) ما بتتلمسش هنا خالص — البرنامج بيتعامل معاها بمنطقه الخاص (قائمة انتظار
    العمل بدون اتصال). */
 
-const CACHE_VERSION = "v2";
+const CACHE_VERSION = "v3";
 const SHELL_CACHE = "clinic-shell-" + CACHE_VERSION;
 const VENDOR_CACHE = "clinic-vendor-" + CACHE_VERSION;
 
+/* React وReact-DOM وBabel وSupabase-js بقوا متخزنين جوه المشروع نفسه (./vendor) —
+   يعني بقوا "نفس المصدر" وبيتغطوا تلقائي من فرع isSameOrigin تحت، مش محتاجين يترصدوا هنا.
+   اللي فضل فعلاً خارجي ومحتاج معاملة خاصة (no-cors) هو تشغيل Tailwind والخطوط بس. */
 const VENDOR_URLS = [
   "https://cdn.tailwindcss.com",
-  "https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js",
-  "https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js",
-  "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js",
-  "https://cdn.jsdelivr.net/npm/@babel/standalone@7.24.7/babel.min.js",
 ];
 
 self.addEventListener("install", (event) => {

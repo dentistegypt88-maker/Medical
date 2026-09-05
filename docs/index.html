@@ -50,10 +50,10 @@
     },
   };
 </script>
-<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
-<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.24.7/babel.min.js"></script>
+<script src="./vendor/react.production.min.js"></script>
+<script src="./vendor/react-dom.production.min.js"></script>
+<script src="./vendor/supabase.js"></script>
+<script src="./vendor/babel.min.js"></script>
 <script>
   function loadScript(src) {
     return new Promise(function (res, rej) {
@@ -65,13 +65,17 @@
   window.addEventListener('load', function () {
     setTimeout(function () {
       if (!document.getElementById('boot')) return;
+      /* المكتبات دلوقتي متخزنة جوه المشروع نفسه (./vendor) مش على CDN خارجي، فالمفروض
+         تتحمّل مع نفس تحميل الصفحة. لو حصل فشل جزئي (اتصال ضعيف قطع طلب واحد بس)، إعادة
+         المحاولة هنا بترجع لنفس الملف المحلي (مع كسر الكاش) بدل ما تعتمد على مصدر خارجي تاني. */
       (async function rescue() {
         try {
-          if (!window.React) { try { await loadScript('https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.production.min.js'); } catch (e) { await loadScript('https://unpkg.com/react@18.2.0/umd/react.production.min.js'); } }
-          if (!window.ReactDOM) { try { await loadScript('https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.production.min.js'); } catch (e) { await loadScript('https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js'); } }
-          if (!window.supabase) { try { await loadScript('https://unpkg.com/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js'); } catch (e) {} }
-          if (!window.Babel) { try { await loadScript('https://unpkg.com/@babel/standalone@7.24.7/babel.min.js'); } catch (e) { await loadScript('https://cdn.jsdelivr.net/npm/@babel/standalone@7.24.7/babel.min.js'); } }
-          if (document.getElementById('boot')) Babel.transformScriptTags();
+          var bust = '?retry=' + Date.now();
+          if (!window.React) await loadScript('./vendor/react.production.min.js' + bust);
+          if (!window.ReactDOM) await loadScript('./vendor/react-dom.production.min.js' + bust);
+          if (!window.supabase) await loadScript('./vendor/supabase.js' + bust);
+          if (!window.Babel) await loadScript('./vendor/babel.min.js' + bust);
+          if (document.getElementById('boot') && window.Babel) Babel.transformScriptTags();
         } catch (e) { showErr(String(e && e.message ? e.message : e)); }
       })();
     }, 2500);
