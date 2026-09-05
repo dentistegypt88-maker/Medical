@@ -298,8 +298,8 @@ const COLS = {
 };
 
 /* ربط الصلاحيات البسيطة اللي بيستخدمها التطبيق بأكواد كتالوج الصلاحيات الرسمي */
-const PERM_KEY_TO_CODE = { appts: "appointments_view", collect: "payments_create", patients: "patients_view", inventory: "inventory_view", payroll: "payroll_tx_create", reports: "reports_view", contracts: "contracts_manage", lab: "lab_manage" };
-const PERM_LABELS = { appts: "المواعيد والحجز", collect: "التحصيل", patients: "المرضى والشيتات", inventory: "المخزن", payroll: "مكافآت وخصومات الموظفين", reports: "التقارير (عرض فقط)", contracts: "النقابات والتعاقدات", lab: "المعمل" };
+const PERM_KEY_TO_CODE = { appts: "appointments_view", collect: "payments_create", patients: "patients_view", inventory: "inventory_view", payroll: "payroll_tx_create", reports: "reports_view", contracts: "contracts_manage", lab: "lab_manage", hr: "staff_edit" };
+const PERM_LABELS = { appts: "المواعيد والحجز", collect: "التحصيل", patients: "المرضى والشيتات", inventory: "المخزن", payroll: "مكافآت وخصومات الموظفين", reports: "التقارير (عرض فقط)", contracts: "النقابات والتعاقدات", lab: "المعمل", hr: "إضافة/تعديل الموظفين والأطباء والوظائف والتخصصات (HR)" };
 const defaultPermsForJobTitle = (jobTitlePerms, jobTitleId) => {
   const out = {};
   Object.entries(PERM_KEY_TO_CODE).forEach(([k, code]) => {
@@ -1359,6 +1359,7 @@ function ClinicApp({ boot }) {
     ...(h.can("reports") ? [["reports", "📊", "التقارير"]] : []),
     ...(h.can("contracts") ? [["contracts", "📜", "التعاقدات"]] : []),
     ...(h.can("lab") ? [["lab", "🦷", "المعمل"]] : []),
+    ...(h.can("hr") ? [["staff", "🕐", "الموظفون"]] : []),
     ["ai", "✨", "المساعد الذكي"],
     ["myattend", "🕐", "حضوري"],
   ];
@@ -1465,7 +1466,7 @@ function ClinicApp({ boot }) {
             {tab === "reports" && (h.isOwner || h.can("reports")) && <Reports db={db} h={h} update={update} />}
             {tab === "contracts" && (h.isOwner || h.can("contracts")) && <Contracts db={db} h={h} update={update} setModal={setModal} />}
             {tab === "lab" && (h.isOwner || h.can("lab")) && <Lab db={db} h={h} update={update} setModal={setModal} />}
-            {tab === "staff" && h.isOwner && <Staff db={db} update={update} setModal={setModal} />}
+            {tab === "staff" && (h.isOwner || h.can("hr")) && <Staff db={db} update={update} setModal={setModal} h={h} />}
             {tab === "inv" && (h.isOwner || h.can("inventory")) && <Inventory db={db} update={update} setModal={setModal} audit={audit} h={h} />}
             {tab === "payroll" && !h.isOwner && h.can("payroll") && <PayrollActions db={db} update={update} setModal={setModal} h={h} />}
             {tab === "logs" && h.isOwner && <Logs db={db} />}
@@ -2311,7 +2312,8 @@ function Lab({ db, h, update, setModal }) {
 }
 
 /* ---------- الموظفون ---------- */
-function Staff({ db, update, setModal }) {
+function Staff({ db, update, setModal, h }) {
+  const canFinance = h.isOwner; // مكافآت/خصومات/صرف المرتب برة نطاق صلاحية HR — ليها صلاحية "payroll" منفصلة أصلاً
   const t = todayStr();
   const recOf = (empId) => db.attendance.find((r) => r.empId === empId && r.date === t);
   const checkIn = (e) => update((d) => { d.attendance.push({ id: uid(), empId: e.id, date: t, in: nowTime(), out: null }); return d; }, `تسجيل حضور ${e.name}`);
@@ -2361,11 +2363,11 @@ function Staff({ db, update, setModal }) {
               <div className="bg-slate-50 rounded-xl p-3 mt-3">
                 <div className="flex flex-wrap gap-2 text-xs">
                   <span className="bg-white rounded-lg px-2 py-1 border border-slate-200">الأساسي: <b>{fmt(e.salary)}</b></span>
-                  {bonus > 0 && <span className="bg-emerald-50 text-emerald-700 rounded-lg px-2 py-1">مكافآت: +{fmt(bonus)}</span>}
-                  {cuts > 0 && <span className="bg-rose-50 text-rose-700 rounded-lg px-2 py-1">خصم/سلف: −{fmt(cuts)}</span>}
-                  <span className="bg-brand-700 text-white rounded-lg px-2 py-1">الصافي: <b>{fmt(net)}</b></span>
+                  {canFinance && bonus > 0 && <span className="bg-emerald-50 text-emerald-700 rounded-lg px-2 py-1">مكافآت: +{fmt(bonus)}</span>}
+                  {canFinance && cuts > 0 && <span className="bg-rose-50 text-rose-700 rounded-lg px-2 py-1">خصم/سلف: −{fmt(cuts)}</span>}
+                  {canFinance && <span className="bg-brand-700 text-white rounded-lg px-2 py-1">الصافي: <b>{fmt(net)}</b></span>}
                 </div>
-                {tx.length > 0 && (
+                {canFinance && tx.length > 0 && (
                   <div className="mt-2 space-y-1">
                     {tx.map((x) => (
                       <p key={x.id} className="text-[11px] text-slate-500 flex items-center gap-1.5">
@@ -2379,7 +2381,7 @@ function Staff({ db, update, setModal }) {
                   </div>
                 )}
                 <div className="flex gap-2 mt-2">
-                  <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "payrollTx", data: e })}>+ مكافأة / خصم / سلفة</Btn>
+                  {canFinance && <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "payrollTx", data: e })}>+ مكافأة / خصم / سلفة</Btn>}
                   {db.branches.length > 0 && <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "memberBranch", data: { memberId: e.id, name: e.name } })}>الفرع</Btn>}
                   <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "employee", data: { edit: e } })}>تعديل</Btn>
                   <Btn size="sm" tone="rose" onClick={() => {
@@ -2391,13 +2393,89 @@ function Staff({ db, update, setModal }) {
                       return d;
                     }, "حذف الموظف: " + e.name);
                   }}>حذف</Btn>
-                  <Btn size="sm" tone="amber" onClick={() => paySalary(e)}>صرف المرتب</Btn>
+                  {canFinance && <Btn size="sm" tone="amber" onClick={() => paySalary(e)}>صرف المرتب</Btn>}
                 </div>
               </div>
             </Card>
           );
         })}
       </div>
+      {!h.isOwner && h.can("hr") && <RosterCatalogs db={db} update={update} setModal={setModal} />}
+    </>
+  );
+}
+
+/* ---------- الأطباء والوظائف والتخصصات (لموظف HR مُفوَّض — بدون صلاحية تعديل مصفوفة الصلاحيات نفسها) ---------- */
+function RosterCatalogs({ db, update, setModal }) {
+  return (
+    <>
+      <div className="flex justify-between items-center mt-6">
+        <h2 className="font-display font-bold text-brand-900">حسابات الأطباء</h2>
+        <Btn size="sm" onClick={() => setModal({ type: "doctor" })}>+ طبيب</Btn>
+      </div>
+      <div className="space-y-2">
+        {[...db.doctors].sort((a, b) => (a.specialty || "").localeCompare(b.specialty || "")).map((d) => {
+          const branch = primaryBranchOf(db, d.id);
+          return (
+            <Card key={d.id} className="p-4 flex items-center gap-3">
+              <div className="flex-1">
+                <p className="font-semibold">{d.name} <span className="text-[10px] bg-brand-50 text-brand-700 rounded-full px-2 py-0.5">{d.specialty || "عام"}</span>
+                  {db.branches.length > 0 && <span className="text-[10px] bg-violet-50 text-violet-700 rounded-full px-2 py-0.5">🏢 {branch ? branch.name : "بدون فرع"}</span>}</p>
+                <p className="text-xs text-slate-500">نسبة {d.commission}% · {d.email || "⚠️ بدون إيميل"}</p>
+              </div>
+              {db.branches.length > 0 && <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "memberBranch", data: { memberId: d.id, name: d.name } })}>الفرع</Btn>}
+              <Btn size="sm" tone="ghost" onClick={() => setModal({ type: "doctor", data: { edit: d } })}>تعديل</Btn>
+              <Btn size="sm" tone="rose" onClick={() => {
+                if (!window.confirm("حذف حساب " + d.name + "؟ سيُمنع من الدخول نهائياً.")) return;
+                update((x) => { x.doctors = x.doctors.filter((y) => y.id !== d.id); return x; }, "حذف حساب الطبيب: " + d.name);
+              }}>حذف</Btn>
+            </Card>
+          );
+        })}
+      </div>
+
+      <div className="flex justify-between items-center mt-6">
+        <h2 className="font-display font-bold text-brand-900">التخصصات الطبية</h2>
+        <Btn size="sm" onClick={() => setModal({ type: "specialty" })}>+ تخصص</Btn>
+      </div>
+      <Card className="p-3">
+        {db.specialties.length === 0 ? <Empty text="لا توجد تخصصات — أضف تخصصات هنا قبل إضافة الأطباء" /> : (
+          <div className="flex flex-wrap gap-2">
+            {db.specialties.map((s) => (
+              <span key={s.id} className={`flex items-center gap-1.5 text-xs rounded-full px-3 py-1.5 border ${s.active ? "bg-brand-50 border-brand-200 text-brand-800" : "bg-slate-50 border-slate-200 text-slate-400"}`}>
+                {s.name}
+                <button onClick={() => setModal({ type: "specialty", data: { edit: s } })} className="hover:text-brand-900">✏️</button>
+                <button onClick={() => {
+                  if (!window.confirm(`حذف تخصص "${s.name}"؟`)) return;
+                  update((d) => { d.specialties = d.specialties.filter((x) => x.id !== s.id); return d; }, "حذف تخصص: " + s.name);
+                }} className="hover:text-rose-600">✕</button>
+              </span>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      <div className="flex justify-between items-center mt-6">
+        <h2 className="font-display font-bold text-brand-900">الوظائف (للموظفين)</h2>
+        <Btn size="sm" onClick={() => setModal({ type: "jobTitle" })}>+ وظيفة</Btn>
+      </div>
+      <Card className="p-3">
+        {db.jobTitles.length === 0 ? <Empty text="لا توجد وظائف — أضف وظائف هنا قبل إضافة الموظفين" /> : (
+          <div className="flex flex-wrap gap-2">
+            {db.jobTitles.map((j) => (
+              <span key={j.id} className={`flex items-center gap-1.5 text-xs rounded-full px-3 py-1.5 border ${j.active ? "bg-violet-50 border-violet-200 text-violet-800" : "bg-slate-50 border-slate-200 text-slate-400"}`}>
+                {j.name}
+                <button onClick={() => setModal({ type: "jobTitle", data: { edit: j } })} className="hover:text-violet-900">✏️</button>
+                <button onClick={() => {
+                  if (!window.confirm(`حذف وظيفة "${j.name}"؟`)) return;
+                  update((d) => { d.jobTitles = d.jobTitles.filter((x) => x.id !== j.id); return d; }, "حذف وظيفة: " + j.name);
+                }} className="hover:text-rose-600">✕</button>
+              </span>
+            ))}
+          </div>
+        )}
+        <p className="text-[11px] text-slate-400 mt-2">تحديد صلاحيات كل وظيفة (🔑) من اختصاص صاحب العيادة فقط.</p>
+      </Card>
     </>
   );
 }
@@ -4846,23 +4924,29 @@ function Modals({ modal, setModal, db, update, h, audit }) {
           </Field>
           <Field label="المرتب الشهري"><input type="number" className={inputCls} value={f.salary || ""} onChange={set("salary")} /></Field>
           <Field label="إيميل الموظف (فارغ = لا يمكنه الدخول)"><input dir="ltr" type="email" className={inputCls} placeholder="staff@example.com" value={f.email || ""} onChange={set("email")} /></Field>
-          <Field label="صلاحيات الموظف — يحددها المالك فقط">
-            <div className="grid grid-cols-2 gap-1.5 text-xs">
-              {Object.entries(PERM_LABELS).map(([k, label]) => (
-                <label key={k} className={`flex items-center gap-1.5 rounded-lg border p-2 cursor-pointer ${(f.perms || {})[k] ? "border-brand-600 bg-brand-50" : "border-slate-200"}`}>
-                  <input type="checkbox" checked={!!(f.perms || {})[k]}
-                    onChange={(ev) => setF({ ...f, perms: { ...(f.perms || {}), [k]: ev.target.checked } })} />
-                  <span>{label}</span>
-                </label>
-              ))}
-            </div>
-          </Field>
-          <Field label="أقصى نسبة خصم يقدر يمنحها الموظف على سعر الخدمة (%)">
-            <input type="number" className={inputCls}
-              value={(f.perms || {}).discountLimitPct ?? ((f.role || "").indexOf("مدير") >= 0 ? 25 : 10)}
-              onChange={(e) => setF({ ...f, perms: { ...(f.perms || {}), discountLimitPct: Number(e.target.value) || 0 } })} />
-            <p className="text-[11px] text-slate-400 mt-1">افتراضيًا 10% للموظفين و25% للمديرين — صاحب العيادة وحده بدون حد.</p>
-          </Field>
+          {h.isOwner ? (
+            <>
+              <Field label="صلاحيات الموظف — يحددها المالك فقط">
+                <div className="grid grid-cols-2 gap-1.5 text-xs">
+                  {Object.entries(PERM_LABELS).map(([k, label]) => (
+                    <label key={k} className={`flex items-center gap-1.5 rounded-lg border p-2 cursor-pointer ${(f.perms || {})[k] ? "border-brand-600 bg-brand-50" : "border-slate-200"}`}>
+                      <input type="checkbox" checked={!!(f.perms || {})[k]}
+                        onChange={(ev) => setF({ ...f, perms: { ...(f.perms || {}), [k]: ev.target.checked } })} />
+                      <span>{label}</span>
+                    </label>
+                  ))}
+                </div>
+              </Field>
+              <Field label="أقصى نسبة خصم يقدر يمنحها الموظف على سعر الخدمة (%)">
+                <input type="number" className={inputCls}
+                  value={(f.perms || {}).discountLimitPct ?? ((f.role || "").indexOf("مدير") >= 0 ? 25 : 10)}
+                  onChange={(e) => setF({ ...f, perms: { ...(f.perms || {}), discountLimitPct: Number(e.target.value) || 0 } })} />
+                <p className="text-[11px] text-slate-400 mt-1">افتراضيًا 10% للموظفين و25% للمديرين — صاحب العيادة وحده بدون حد.</p>
+              </Field>
+            </>
+          ) : (
+            <p className="text-[11px] text-slate-400 bg-slate-50 rounded-lg p-2">✓ صلاحيات الموظف بتتحدد تلقائي حسب الوظيفة المختارة — لتغييرها كلّم صاحب العيادة.</p>
+          )}
           <Btn className="w-full" onClick={() => {
             if (!f.name) return;
             const discountLimitPct = (f.perms || {}).discountLimitPct ?? ((f.role || "").indexOf("مدير") >= 0 ? 25 : 10);
