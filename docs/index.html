@@ -50,10 +50,10 @@
     },
   };
 </script>
-<script src="./vendor/react.production.min.js"></script>
-<script src="./vendor/react-dom.production.min.js"></script>
-<script src="./vendor/supabase.js"></script>
-<script src="./vendor/babel.min.js"></script>
+<script src="https://dentistegypt88-maker.github.io/Medical/vendor/react.production.min.js"></script>
+<script src="https://dentistegypt88-maker.github.io/Medical/vendor/react-dom.production.min.js"></script>
+<script src="https://dentistegypt88-maker.github.io/Medical/vendor/supabase.js"></script>
+<script src="https://dentistegypt88-maker.github.io/Medical/vendor/babel.min.js"></script>
 <script>
   function loadScript(src) {
     return new Promise(function (res, rej) {
@@ -65,16 +65,19 @@
   window.addEventListener('load', function () {
     setTimeout(function () {
       if (!document.getElementById('boot')) return;
-      /* المكتبات دلوقتي متخزنة جوه المشروع نفسه (./vendor) مش على CDN خارجي، فالمفروض
-         تتحمّل مع نفس تحميل الصفحة. لو حصل فشل جزئي (اتصال ضعيف قطع طلب واحد بس)، إعادة
-         المحاولة هنا بترجع لنفس الملف المحلي (مع كسر الكاش) بدل ما تعتمد على مصدر خارجي تاني. */
+      /* المكتبات دلوقتي متخزنة جوه المشروع نفسه (docs/vendor) على GitHub Pages مباشرة، مش على
+         CDN خارجي زي قبل كده. بنستخدم رابط مطلق (مش نسبي) عشان يشتغل صح حتى لما الصفحة تتحمّل
+         بعنوان أساس مختلف (زي تطبيق الموبايل اللي بيحمّل نفس الـHTML من دالة Supabase). لو حصل
+         فشل جزئي (اتصال ضعيف قطع طلب واحد بس)، إعادة المحاولة هنا بترجع لنفس المصدر (مع كسر
+         الكاش) بدل ما تعتمد على مصدر خارجي تاني غير موثوق. */
       (async function rescue() {
         try {
+          var base = 'https://dentistegypt88-maker.github.io/Medical/vendor/';
           var bust = '?retry=' + Date.now();
-          if (!window.React) await loadScript('./vendor/react.production.min.js' + bust);
-          if (!window.ReactDOM) await loadScript('./vendor/react-dom.production.min.js' + bust);
-          if (!window.supabase) await loadScript('./vendor/supabase.js' + bust);
-          if (!window.Babel) await loadScript('./vendor/babel.min.js' + bust);
+          if (!window.React) await loadScript(base + 'react.production.min.js' + bust);
+          if (!window.ReactDOM) await loadScript(base + 'react-dom.production.min.js' + bust);
+          if (!window.supabase) await loadScript(base + 'supabase.js' + bust);
+          if (!window.Babel) await loadScript(base + 'babel.min.js' + bust);
           if (document.getElementById('boot') && window.Babel) Babel.transformScriptTags();
         } catch (e) { showErr(String(e && e.message ? e.message : e)); }
       })();
